@@ -20,6 +20,7 @@ export interface ProgressBarProps {
   color?: string;
   trackColor?: string;
   height?: number;
+  simultaneousHandlers?: ReturnType<typeof Gesture.Pan> | ReturnType<typeof Gesture.Pan>[];
 }
 
 /**
@@ -35,6 +36,7 @@ export function ProgressBar({
   color = palette.text,
   trackColor = palette.borderHi,
   height = 4,
+  simultaneousHandlers,
 }: ProgressBarProps) {
   const width = useSharedValue(0);
   const positionValue = useSharedValue(0);
@@ -93,7 +95,7 @@ export function ProgressBar({
     });
 
   const tap = Gesture.Tap()
-    .enabled(onSeek != null)
+    .enabled(onSeek != null && duration > 0)
     .maxDistance(8)
     .onEnd((event, success) => {
       if (success) {
@@ -103,6 +105,10 @@ export function ProgressBar({
     });
 
   const gesture = Gesture.Race(pan, tap);
+
+  if (simultaneousHandlers) {
+    (gesture as any).simultaneousWithExternalGesture(simultaneousHandlers);
+  }
 
   const ratio = useAnimatedStyle(() => {
     const live = durationValue.value > 0 ? positionValue.value / durationValue.value : 0;
@@ -137,7 +143,7 @@ export function ProgressBar({
 
 const styles = StyleSheet.create({
   hitArea: {
-    height: 44,
+    height: 24,
     justifyContent: 'center',
   },
   track: {

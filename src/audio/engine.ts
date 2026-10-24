@@ -41,6 +41,8 @@ class AudioEngine {
   private fadeComplete: ((position: number) => void) | null = null;
   private fadeAbort: (() => void) | null = null;
   private fading = false;
+  private isLoaded = false;
+  private isBuffering = false;
 
   setStatusListener(listener: StatusListener | null): void {
     this.listener = listener;
@@ -136,6 +138,8 @@ class AudioEngine {
       if (status.didJustFinish && !this.handledFinish) {
         this.handledFinish = true;
       }
+      this.isLoaded = status.isLoaded;
+      this.isBuffering = status.isBuffering;
       this.listener?.({
         currentTime: status.currentTime ?? 0,
         duration: status.duration ?? 0,
@@ -286,7 +290,7 @@ class AudioEngine {
   }
 
   async seek(seconds: number): Promise<void> {
-    if (!this.player) return;
+    if (!this.player || !this.isLoaded || this.isBuffering) return;
     try {
       await this.player.seekTo(Math.max(0, seconds));
     } catch {
@@ -305,6 +309,8 @@ class AudioEngine {
     this.loadToken++;
     this.subscription?.remove();
     this.subscription = null;
+    this.isLoaded = false;
+    this.isBuffering = false;
     if (this.player) {
       try {
         this.player.pause();

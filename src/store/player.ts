@@ -5,6 +5,9 @@ import { audioEngine } from '../audio/engine';
 import { shuffleArray } from '../lib/format';
 import type { RepeatMode, Track } from '../types/track';
 
+let lastSeekTime = 0;
+const SEEK_DEBOUNCE_MS = 150;
+
 /**
  * Queue and playback state.
  *
@@ -194,6 +197,9 @@ export const usePlayerStore = create<PlayerState>()(
       seek: (seconds) => {
         cancelTransition();
         const clamped = Math.max(0, seconds);
+        const now = Date.now();
+        if (now - lastSeekTime < SEEK_DEBOUNCE_MS) return;
+        lastSeekTime = now;
         set({ position: clamped, resumePosition: clamped });
         void audioEngine.seek(clamped);
       },
