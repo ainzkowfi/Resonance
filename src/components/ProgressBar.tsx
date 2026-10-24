@@ -20,6 +20,8 @@ export interface ProgressBarProps {
   color?: string;
   trackColor?: string;
   height?: number;
+  /** Vertical alignment of the line inside the touch area. */
+  align?: 'center' | 'top';
   simultaneousHandlers?: ReturnType<typeof Gesture.Pan> | ReturnType<typeof Gesture.Pan>[];
 }
 
@@ -36,6 +38,7 @@ export function ProgressBar({
   color = palette.text,
   trackColor = palette.borderHi,
   height = 4,
+  align = 'center',
   simultaneousHandlers,
 }: ProgressBarProps) {
   const width = useSharedValue(0);
@@ -55,6 +58,7 @@ export function ProgressBar({
   }, [duration, durationValue]);
 
   const updateDrag = (x: number) => {
+    'worklet';
     if (width.value <= 0) return;
     dragging.value = true;
     dragAmount.value = withTiming(1, { duration: motion.fast });
@@ -62,8 +66,10 @@ export function ProgressBar({
   };
 
   const commitSeek = (x: number) => {
+    'worklet';
     if (!onSeek || width.value <= 0) return;
     const target = Math.min(1, Math.max(0, x / width.value)) * durationValue.value;
+    if (!Number.isFinite(target)) return;
     dragging.value = false;
     dragAmount.value = withTiming(0, { duration: motion.fast });
     // Keep the preview at the requested time until the audio engine reports
@@ -129,7 +135,7 @@ export function ProgressBar({
   return (
     <GestureDetector gesture={gesture}>
       <View
-        style={styles.hitArea}
+        style={[styles.hitArea, align === 'top' && styles.hitAreaTop]}
         onLayout={(event) => {
           width.value = event.nativeEvent.layout.width;
         }}
@@ -150,6 +156,9 @@ const styles = StyleSheet.create({
   hitArea: {
     height: 24,
     justifyContent: 'center',
+  },
+  hitAreaTop: {
+    justifyContent: 'flex-start',
   },
   track: {
     width: '100%',

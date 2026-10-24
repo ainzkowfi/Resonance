@@ -99,7 +99,7 @@ export const usePlayerStore = create<PlayerState>()(
       position: 0,
       duration: 0,
       shuffle: false,
-      repeat: 'off',
+      repeat: 'all',
       crossfade: true,
       originalQueue: [],
       resumePosition: 0,
@@ -194,6 +194,7 @@ export const usePlayerStore = create<PlayerState>()(
       seek: (seconds) => {
         cancelTransition();
         const clamped = Math.max(0, seconds);
+        if (!Number.isFinite(clamped)) return;
         set({ position: clamped, resumePosition: clamped });
         void audioEngine.seek(clamped);
       },
@@ -323,10 +324,11 @@ export const usePlayerStore = create<PlayerState>()(
     {
       name: 'resonance-player',
       storage: createDedupedStorage<PersistedPlayerState>(),
-      version: 2,
+      version: 3,
       migrate: (persisted, version) => {
+        let next = persisted as PersistedPlayerState;
         if (version < 2) {
-          const previous = persisted as PersistedPlayerState;
+          const previous = next;
           const isLocal = (track: Track | null | undefined) =>
             Boolean(track && track.source === 'local' && !/^https?:\/\//i.test(track.uri));
           const queue = (previous.queue ?? []).filter(isLocal);
@@ -338,7 +340,7 @@ export const usePlayerStore = create<PlayerState>()(
             ? queue.findIndex((track) => track.id === preferredId)
             : -1;
 
-          return {
+          next = {
             ...previous,
             queue,
             originalQueue,
@@ -348,7 +350,8 @@ export const usePlayerStore = create<PlayerState>()(
             isPlaying: false,
           };
         }
-        return persisted as PersistedPlayerState;
+        if (version < 3) next = { ...next, repeat: 'all' };
+        return next;
       },
       partialize: (state): PersistedPlayerState => ({
         queue: state.queue,

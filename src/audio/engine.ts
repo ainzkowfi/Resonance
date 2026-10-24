@@ -321,7 +321,7 @@ class AudioEngine {
   }
 
   async seek(seconds: number): Promise<void> {
-    if (!this.player) return;
+    if (!this.player || !Number.isFinite(seconds)) return;
     // Keep only the newest target. A seek issued while the source is loading
     // or buffering is applied as soon as the player reports that it is ready.
     this.pendingSeek = Math.max(0, seconds);

@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as Linking from 'expo-linking';
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { FadeIn, FadeInDown, runOnJS } from 'react-native-reanimated';
@@ -17,6 +17,7 @@ import { resolvePlaylist, useLibraryStore } from '../../store/library';
 import { usePlayerStore } from '../../store/player';
 import { openPlayer } from '../../store/playerSurface';
 import { font, HIT, palette, radius } from '../../theme';
+import type { Track } from '../../types/track';
 
 const VIEWS = [
   { value: 'tracks' as const, label: 'Tracks' },
@@ -24,6 +25,39 @@ const VIEWS = [
   { value: 'artists' as const, label: 'Artists' },
   { value: 'playlists' as const, label: 'Playlists' },
 ];
+
+type TrackSort = 'title' | 'artist' | 'album';
+
+const SORTS: { value: TrackSort; label: string }[] = [
+  { value: 'title', label: 'Title' },
+  { value: 'artist', label: 'Artist' },
+  { value: 'album', label: 'Album' },
+];
+
+function sortTracks(tracks: Track[], mode: TrackSort): Track[] {
+  const sorted = [...tracks];
+  sorted.sort((a, b) => {
+    if (mode === 'title') {
+      return a.title.localeCompare(b.title) || a.artist.localeCompare(b.artist);
+    }
+    if (mode === 'album') {
+      return (
+        (a.album ?? '').localeCompare(b.album ?? '') ||
+        a.artist.localeCompare(b.artist) ||
+        (a.discNumber ?? 0) - (b.discNumber ?? 0) ||
+        (a.trackNumber ?? 0) - (b.trackNumber ?? 0)
+      );
+    }
+    return (
+      a.artist.localeCompare(b.artist) ||
+      (a.album ?? '').localeCompare(b.album ?? '') ||
+      (a.discNumber ?? 0) - (b.discNumber ?? 0) ||
+      (a.trackNumber ?? 0) - (b.trackNumber ?? 0) ||
+      a.title.localeCompare(b.title)
+    );
+  });
+  return sorted;
+}
 
 export default function LibraryScreen() {
   const insets = useSafeAreaInsets();
@@ -47,6 +81,8 @@ export default function LibraryScreen() {
   } = useLibraryStore();
   const playTracks = usePlayerStore((state) => state.playTracks);
   const router = useRouter();
+  const [sort, setSort] = useState<TrackSort>('artist');
+  const sortedTracks = useMemo(() => sortTracks(tracks, sort), [tracks, sort]);
 
   const playlistRows = useMemo(
     () =>
@@ -108,7 +144,7 @@ export default function LibraryScreen() {
               icon: 'play',
               label: 'Play everything',
               onPress: () => {
-                playTracks(tracks);
+                playTracks(sortedTracks);
                 openPlayer();
               },
             }
@@ -158,8 +194,15 @@ export default function LibraryScreen() {
         </View>
 
         {view === 'tracks' ? (
+          <View style={styles.sortRow}>
+            <Text style={styles.sortLabel}>SORT</Text>
+            <Segmented options={SORTS} value={sort} onChange={setSort} />
+          </View>
+        ) : null}
+
+        {view === 'tracks' ? (
           <Animated.FlatList
-            data={tracks}
+            data={sortedTracks}
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.listContent}
             showsVerticalScrollIndicator={false}
@@ -169,7 +212,7 @@ export default function LibraryScreen() {
                 <TrackRow
                   track={item}
                   onPress={() => {
-                    playTracks(tracks, index);
+                    playTracks(sortedTracks, index);
                     openPlayer();
                   }}
                 />
@@ -379,6 +422,19 @@ toolbarRight: {
   flexDirection: 'row',
   alignItems: 'center',
   gap: 8,
+},
+sortRow: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  gap: 10,
+  paddingHorizontal: 16,
+  paddingBottom: 10,
+},
+sortLabel: {
+  ...font.caption,
+  fontWeight: '700',
+  letterSpacing: 1.2,
+  color: palette.textFaint,
 },
 iconButton: {
   width: HIT.min,

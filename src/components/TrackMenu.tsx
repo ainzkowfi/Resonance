@@ -55,16 +55,8 @@ export function TrackMenu() {
 
   const remove = () => {
     if (!track) return;
-    Alert.alert('Hide from library?', 'The file stays on your device. Restore it in Settings.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Hide',
-        onPress: () => {
-          void hideTrack(track);
-          dismiss();
-        },
-      },
-    ]);
+    void hideTrack(track);
+    dismiss();
   };
 
   const erase = () => {

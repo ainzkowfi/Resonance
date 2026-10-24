@@ -75,6 +75,7 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
   const [lyricsMode, setLyricsMode] = useState<LyricsMode>('off');
   const [stage, setStage] = useState({ x: 0, y: 0, size: 0, top: 0, height: 0 });
   const pendingMiniEntry = useRef<number | null>(null);
+  const pendingMiniInstant = useRef(false);
   const reduceMotion = useReducedMotion();
   const lyrics = useTrackLyrics(track);
 
@@ -97,6 +98,14 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
     const direction = pendingMiniEntry.current;
     if (direction === null) return;
     pendingMiniEntry.current = null;
+    if (pendingMiniInstant.current) {
+      // A completed swipe already animated the old card off-screen. Put the
+      // new track straight into place instead of sliding it in again.
+      pendingMiniInstant.current = false;
+      miniTrackX.set(0);
+      miniTrackOpacity.set(1);
+      return;
+    }
     miniTrackX.set(reduceMotion ? 0 : -direction * Math.min(width * 0.22, 72));
     miniTrackOpacity.set(0);
     miniTrackX.set(withSpring(0, motion.spring.snappy));
@@ -128,10 +137,12 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
     (direction: number) => {
       const before = usePlayerStore.getState().currentTrack?.id;
       pendingMiniEntry.current = direction;
+      pendingMiniInstant.current = true;
       skip(direction);
       const after = usePlayerStore.getState().currentTrack?.id;
       if (before === after) {
         pendingMiniEntry.current = null;
+        pendingMiniInstant.current = false;
         miniTrackX.set(withSpring(0, motion.spring.snappy));
         miniTrackOpacity.set(withTiming(1, { duration: motion.fast }));
       }
@@ -662,13 +673,14 @@ function MiniProgress() {
   const duration = usePlayerStore((state) => state.duration);
 
   return (
-    <View style={styles.miniProgress}>
+    <View style={styles.miniProgress} pointerEvents="none">
       <ProgressBar
         position={position}
         duration={duration}
         color={palette.accentAlt}
         trackColor={palette.borderHi}
         height={2}
+        align="top"
       />
     </View>
   );
