@@ -27,12 +27,21 @@ export interface Id3Tags {
   artist?: string;
   album?: string;
   albumArtist?: string;
+  composer?: string;
+  conductor?: string;
+  lyricist?: string;
+  publisher?: string;
+  copyright?: string;
+  comment?: string;
+  grouping?: string;
+  encoder?: string;
   genre?: string;
   year?: number;
   trackNumber?: number;
   discNumber?: number;
   isrc?: string;
   bpm?: number;
+  gain?: number;
   /** Unsynchronised lyrics embedded in the tag (USLT, or a TXXX:LYRICS frame). */
   lyrics?: string;
   /** Embedded cover art as a data URI. */
@@ -46,6 +55,20 @@ const TEXT_FRAMES: Record<string, keyof Id3Tags> = {
   TP1: 'artist',
   TPE2: 'albumArtist',
   TP2: 'albumArtist',
+  TCOM: 'composer',
+  TCM: 'composer',
+  TPE3: 'conductor',
+  TP3: 'conductor',
+  TEXT: 'lyricist',
+  TXT: 'lyricist',
+  TPUB: 'publisher',
+  TPB: 'publisher',
+  TCOP: 'copyright',
+  TCR: 'copyright',
+  TIT1: 'grouping',
+  TI1: 'grouping',
+  TSSE: 'encoder',
+  TSS: 'encoder',
   TALB: 'album',
   TAL: 'album',
   TCON: 'genre',
@@ -128,6 +151,27 @@ function parseLyrics(body: Uint8Array): string | undefined {
   return clean(text) || undefined;
 }
 
+/** COMM/COM: encoding, language, descriptor, then the comment text. */
+function parseComment(body: Uint8Array): string | undefined {
+  if (body.length < 5) return undefined;
+  const wide = isWide(body[0]);
+  const descEnd = findNull(body, 4, wide);
+  if (descEnd < 0) return undefined;
+  const text = wide
+    ? utf16(body.subarray(descEnd + 2), body[0] === 1 && body[descEnd + 2] === 0xff)
+    : body[0] === 3
+      ? utf8(body.subarray(descEnd + 1))
+      : latin1(body.subarray(descEnd + 1));
+  return clean(text) || undefined;
+}
+
+function decibels(value: string): number | undefined {
+  const match = value.match(/[-+]?\d+(?:\.\d+)?/);
+  if (!match) return undefined;
+  const parsed = Number(match[0]);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 /** TXXX: encoding, description, value. We only care about LYRICS/UNSYNCEDLYRICS. */
 function parseUserText(body: Uint8Array): { key: string; value: string } | undefined {
   if (body.length < 2) return undefined;
@@ -191,10 +235,24 @@ export function parseId3(bytes: Uint8Array): Id3Tags {
       tags.lyrics = parseLyrics(body);
     }
 
+    if (!tags.comment && (id === 'COMM' || id === 'COM')) {
+      tags.comment = parseComment(body);
+    }
+
     if (!tags.lyrics && (id === 'TXXX' || id === 'TXX')) {
       const user = parseUserText(body);
-      if (user && (user.key === 'LYRICS' || user.key === 'UNSYNCEDLYRICS' || user.key === 'UNSYNCED LYRICS')) {
-        tags.lyrics = user.value || undefined;
+      if (user) {
+        if (user.key === 'LYRICS' || user.key === 'UNSYNCEDLYRICS' || user.key === 'UNSYNCED LYRICS') {
+          tags.lyrics = user.value || undefined;
+        } else if (user.key === 'REPLAYGAIN_TRACK_GAIN' || user.key === 'REPLAY GAIN') {
+          tags.gain = decibels(user.value);
+        } else if (user.key === 'PUBLISHER' || user.key === 'LABEL') {
+          tags.publisher ??= user.value || undefined;
+        } else if (user.key === 'COMPOSER') {
+          tags.composer ??= user.value || undefined;
+        } else if (user.key === 'COMMENT' || user.key === 'DESCRIPTION') {
+          tags.comment ??= user.value || undefined;
+        }
       }
     }
 

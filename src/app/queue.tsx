@@ -194,7 +194,7 @@ const styles = StyleSheet.create({
     backgroundColor: palette.bg,
   },
   rowCurrent: {
-    backgroundColor: 'rgba(124,92,255,0.10)',
+    backgroundColor: 'rgba(124,92,255,0.22)',
   },
   rowMain: {
     flex: 1,

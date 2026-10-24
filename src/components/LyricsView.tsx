@@ -80,7 +80,6 @@ export function LyricsView({ lyrics, position, onSeek, scroll = true }: LyricsVi
         {synced.map((item, index) => (
           <Text
             key={`${item.time}-${index}`}
-            numberOfLines={1}
             onPress={onSeek ? () => onSeek(item.time) : undefined}
             accessibilityRole={onSeek ? 'button' : undefined}
             accessibilityLabel={onSeek ? `Seek to ${Math.floor(item.time / 60)}:${String(Math.floor(item.time % 60)).padStart(2, '0')}, ${item.text}` : undefined}
@@ -100,14 +99,15 @@ export function LyricsView({ lyrics, position, onSeek, scroll = true }: LyricsVi
       keyExtractor={(item, index) => `${item.time}-${index}`}
       showsVerticalScrollIndicator={false}
       contentContainerStyle={styles.content}
-      getItemLayout={(_, index) => ({ length: LINE_HEIGHT, offset: LINE_HEIGHT * index, index })}
       initialNumToRender={12}
       windowSize={7}
+      onScrollToIndexFailed={({ index, averageItemLength }) => {
+        listRef.current?.scrollToOffset({ offset: index * averageItemLength, animated: true });
+      }}
       renderItem={({ item, index }) => {
         const isActive = index === active;
         return (
           <Animated.Text
-            numberOfLines={1}
             onPress={onSeek ? () => onSeek(item.time) : undefined}
             accessibilityRole={onSeek ? 'button' : undefined}
             accessibilityLabel={onSeek ? `Seek to ${Math.floor(item.time / 60)}:${String(Math.floor(item.time % 60)).padStart(2, '0')}, ${item.text}` : undefined}
@@ -136,8 +136,10 @@ const styles = StyleSheet.create({
   },
   line: {
     ...font.title,
-    height: LINE_HEIGHT,
-    lineHeight: LINE_HEIGHT,
+    minHeight: LINE_HEIGHT,
+    lineHeight: 30,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
     textAlign: 'center',
   },
   lineActive: {

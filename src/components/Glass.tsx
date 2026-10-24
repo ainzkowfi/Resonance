@@ -25,7 +25,8 @@ export function Glass({ children, style, radius, intensity = 50, ...rest }: Glas
     return (
       <GlassView
         glassEffectStyle="regular"
-        colorScheme="light"
+        colorScheme="dark"
+        tintColor={palette.glass}
         style={[styles.clip, clip, style]}
         {...rest}
       >
@@ -38,7 +39,7 @@ export function Glass({ children, style, radius, intensity = 50, ...rest }: Glas
     <View style={[styles.clip, clip, style]} {...rest}>
       <BlurView
         intensity={intensity}
-        tint="light"
+        tint="dark"
         blurMethod={BLUR_METHOD}
         style={StyleSheet.absoluteFill}
       />

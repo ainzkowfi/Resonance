@@ -19,6 +19,19 @@ type LibraryView = 'tracks' | 'albums' | 'artists' | 'playlists';
 const FOLDER_KEY = 'resonance:music-folder';
 const PREFS_KEY = 'resonance:library-prefs';
 const LIBRARY_CACHE_KEY = 'resonance:library-cache';
+const OFFLINE_MIGRATION_KEY = 'resonance:offline-migration-v1';
+
+async function clearLegacyOnlineMetadata(): Promise<void> {
+  try {
+    if (await AsyncStorage.getItem(OFFLINE_MIGRATION_KEY)) return;
+    const keys = await AsyncStorage.getAllKeys();
+    const metadataKeys = keys.filter((key) => key.startsWith('resonance:meta:'));
+    if (metadataKeys.length > 0) await AsyncStorage.multiRemove(metadataKeys);
+    await AsyncStorage.setItem(OFFLINE_MIGRATION_KEY, 'done');
+  } catch {
+    // A failed cleanup must not block access to the local music library.
+  }
+}
 
 export interface Playlist {
   id: string;
@@ -166,6 +179,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   view: 'tracks',
 
   hydrate: async () => {
+    await clearLegacyOnlineMetadata();
     const loaded = await ensurePrefs();
     set(loaded);
     const folder = await loadMusicFolder();

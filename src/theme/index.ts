@@ -22,26 +22,25 @@ export const motion = {
 } as const;
 
 /**
- * Apple-style light palette. Groups sit on `bg`, cards on `surface`, and
- * `glass` is the translucent fill glass surfaces fall back to where a real
- * blur is unavailable.
+ * Calm dark palette. The page, cards, and raised controls use separate tones
+ * so surfaces stay easy to distinguish without relying on bright white.
  */
 export const palette = {
-  bg: '#F2F2F7',
-  bgElevated: '#FFFFFF',
-  surface: '#FFFFFF',
-  surfaceHi: '#EFEFF4',
-  border: 'rgba(60,60,67,0.10)',
-  borderHi: 'rgba(60,60,67,0.20)',
-  text: '#1C1C1E',
-  textDim: 'rgba(60,60,67,0.62)',
-  textFaint: 'rgba(60,60,67,0.36)',
-  accent: '#6B4EFF',
-  accentAlt: '#00A37E',
-  danger: '#FF3B30',
-  scrim: 'rgba(0,0,0,0.35)',
-  glass: 'rgba(255,255,255,0.66)',
-  glassBorder: 'rgba(255,255,255,0.85)',
+  bg: '#111217',
+  bgElevated: '#262730',
+  surface: '#1B1C23',
+  surfaceHi: '#2A2B34',
+  border: 'rgba(235,235,245,0.13)',
+  borderHi: 'rgba(235,235,245,0.25)',
+  text: '#F3F2F7',
+  textDim: '#C6C6D0',
+  textFaint: '#A1A2AE',
+  accent: '#A18BFF',
+  accentAlt: '#48C9A5',
+  danger: '#FF716A',
+  scrim: 'rgba(0,0,0,0.64)',
+  glass: 'rgba(35,36,45,0.96)',
+  glassBorder: 'rgba(235,235,245,0.16)',
 } as const;
 
 /** Minimum comfortable touch target. Apple's HIG says 44pt; we use 48 for rows. */
@@ -72,8 +71,8 @@ export const font = {
 export const shadow = {
   card: Platform.select({
     ios: {
-      shadowColor: '#1C1C1E',
-      shadowOpacity: 0.12,
+      shadowColor: '#000000',
+      shadowOpacity: 0.32,
       shadowRadius: 18,
       shadowOffset: { width: 0, height: 8 },
     },
@@ -83,7 +82,7 @@ export const shadow = {
   glow: Platform.select({
     ios: {
       shadowColor: '#6B4EFF',
-      shadowOpacity: 0.22,
+      shadowOpacity: 0.3,
       shadowRadius: 24,
       shadowOffset: { width: 0, height: 8 },
     },

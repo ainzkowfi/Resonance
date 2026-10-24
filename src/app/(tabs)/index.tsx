@@ -476,7 +476,7 @@ cta: {
 },
 ctaText: {
   ...font.label,
-  color: '#fff',
+  color: palette.bg,
 },
 ctaSecondary: {
   minHeight: HIT.min,

@@ -24,7 +24,7 @@ import Animated, {
 import { scheduleOnRN } from 'react-native-worklets';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { useTrackInfo } from '../hooks/useTrackInfo';
+import { useTrackLyrics } from '../hooks/useTrackLyrics';
 import { formatDuration } from '../lib/format';
 import { usePlayerStore } from '../store/player';
 import { usePlayerSurface } from '../store/playerSurface';
@@ -33,7 +33,6 @@ import { AmbientBackground } from './AmbientBackground';
 import { Artwork } from './Artwork';
 import { PLAYER_BAR_HEIGHT } from './bottomBar';
 import { EqBars } from './EqBars';
-import { Glass } from './Glass';
 import { LyricsView } from './LyricsView';
 import { ProgressBar } from './ProgressBar';
 import { Touch } from './Touch';
@@ -77,13 +76,14 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
   const [stage, setStage] = useState({ x: 0, y: 0, size: 0, top: 0, height: 0 });
   const pendingMiniEntry = useRef<number | null>(null);
   const reduceMotion = useReducedMotion();
-  const info = useTrackInfo(track);
+  const lyrics = useTrackLyrics(track);
 
   const expand = useSharedValue(0);
   const dragX = useSharedValue(0);
   const shown = useSharedValue(0);
   const miniTrackX = useSharedValue(0);
   const miniTrackOpacity = useSharedValue(1);
+  const miniGestureAxis = useSharedValue(0);
 
   useEffect(() => {
     expand.value = withSpring(expanded ? 1 : 0, motion.spring.smooth);
@@ -283,7 +283,14 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
     activeOffsetY: [-14, 14],
     activeOffsetX: [-24, 24],
     onUpdate: (event) => {
-      if (Math.abs(event.translationX) > Math.abs(event.translationY)) {
+      const absX = Math.abs(event.translationX);
+      const absY = Math.abs(event.translationY);
+      if (miniGestureAxis.get() === 0 && Math.max(absX, absY) > 12) {
+        // Accept diagonal thumb swipes while keeping the intended axis stable
+        // for the rest of the gesture.
+        miniGestureAxis.set(absX >= absY * 0.65 ? 1 : -1);
+      }
+      if (miniGestureAxis.get() === 1) {
         // Keep the neighbor preview under the user's finger even when reduced
         // motion is enabled; only the release animation changes in that mode.
         miniTrackX.set(event.translationX);
@@ -295,7 +302,7 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
             Extrapolation.CLAMP,
           ),
         );
-      } else {
+      } else if (miniGestureAxis.get() === -1) {
         miniTrackX.set(0);
         miniTrackOpacity.set(1);
         if (event.translationY < 0) {
@@ -305,12 +312,14 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
     },
     onDeactivate: (event) => {
       if (event.canceled) {
+        miniGestureAxis.set(0);
         miniTrackX.set(withSpring(0, motion.spring.snappy));
         miniTrackOpacity.set(withTiming(1, { duration: motion.fast }));
         return;
       }
 
-      const horizontal = Math.abs(event.translationX) > Math.abs(event.translationY);
+      const horizontal = miniGestureAxis.get() === 1;
+      miniGestureAxis.set(0);
       const shouldSkip =
         horizontal && (Math.abs(event.translationX) > 72 || Math.abs(event.velocityX) > 600);
       if (shouldSkip) {
@@ -369,7 +378,6 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
   );
 
   const seed = track ? `${track.artist}${track.album ?? ''}` : '';
-  const lyrics = info?.lyrics;
   const hasLyrics = Boolean(lyrics);
 
   return (
@@ -381,11 +389,11 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
         <AmbientBackground seed={seed} artwork={track?.artwork} />
       </Animated.View>
 
-      <Animated.View
-        pointerEvents={expanded ? 'auto' : 'none'}
-        style={[styles.full, { paddingTop: insets.top }, fullStyle]}
-      >
-        <GestureDetector gesture={collapsePan}>
+      <GestureDetector gesture={collapsePan}>
+        <Animated.View
+          pointerEvents={expanded ? 'auto' : 'none'}
+          style={[styles.full, { paddingTop: insets.top }, fullStyle]}
+        >
           <View style={styles.topBar}>
             <Touch
               style={styles.iconButton}
@@ -397,7 +405,7 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
             <View style={styles.topText}>
               <Text style={styles.topLabel}>NOW PLAYING</Text>
               <Text style={styles.topValue} numberOfLines={1}>
-                {track?.album ?? (track?.source === 'local' ? 'On this device' : 'Catalog')}
+                {track?.album ?? 'On this device'}
               </Text>
             </View>
             <Touch
@@ -408,7 +416,6 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
               <Ionicons name="list" size={22} color={palette.text} />
             </Touch>
           </View>
-        </GestureDetector>
 
         <View style={styles.stage} onLayout={onStageLayout} />
 
@@ -484,13 +491,14 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
             />
           </Touch>
         </View>
-      </Animated.View>
+        </Animated.View>
+      </GestureDetector>
 
       <Animated.View
         style={[styles.mini, { bottom }, miniStyle]}
         pointerEvents={!track || expanded ? 'none' : 'box-none'}
       >
-        <Glass style={styles.miniGlass} />
+        <View style={styles.miniGlass} pointerEvents="none" />
         <GestureDetector gesture={miniPan}>
           <View style={styles.miniViewport}>
             <Animated.View style={[styles.miniInner, miniTrackStyle]}>
@@ -803,6 +811,7 @@ const styles = StyleSheet.create({
   },
   miniGlass: {
     ...absoluteFill,
+    backgroundColor: palette.surface,
   },
   miniViewport: {
     flex: 1,

@@ -6,7 +6,7 @@ import { font, HIT, palette } from '../theme';
 import { Touch } from './Touch';
 
 export interface ScreenHeaderProps {
-  title: string;
+  title?: string;
   subtitle?: string;
   back?: boolean;
   action?: { icon: keyof typeof Ionicons.glyphMap; onPress: () => void; label: string };
@@ -24,20 +24,24 @@ export function ScreenHeader({ title, subtitle, back, action }: ScreenHeaderProp
           onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))}
           accessibilityLabel="Go back"
         >
-          <Ionicons name="chevron-down" size={24} color={palette.text} />
+          <Ionicons name="chevron-back" size={24} color={palette.text} />
         </Touch>
       ) : null}
 
-      <View style={styles.titles}>
-        <Text style={styles.title} numberOfLines={1}>
-          {title}
-        </Text>
-        {subtitle ? (
+      {title || subtitle ? (
+        <View style={styles.titles}>
+          {title ? (
+            <Text style={styles.title} numberOfLines={1}>
+              {title}
+            </Text>
+          ) : null}
+          {subtitle ? (
           <Text style={styles.subtitle} numberOfLines={1}>
             {subtitle}
           </Text>
-        ) : null}
-      </View>
+          ) : null}
+        </View>
+      ) : null}
 
       {action ? (
         <Touch

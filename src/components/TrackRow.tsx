@@ -56,7 +56,7 @@ const styles = StyleSheet.create({
     minHeight: 64,
   },
   rowCurrent: {
-    backgroundColor: 'rgba(107,78,255,0.10)',
+    backgroundColor: 'rgba(107,78,255,0.22)',
     borderRadius: radius.md,
   },
   text: {

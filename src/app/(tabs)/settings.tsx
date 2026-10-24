@@ -15,7 +15,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BOTTOM_BAR_SPACE } from '../../components/bottomBar';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { Touch } from '../../components/Touch';
-import { clearMetadataCache } from '../../lib/cache';
 import { formatDuration } from '../../lib/format';
 import { useLibraryStore } from '../../store/library';
 import { usePlayerStore } from '../../store/player';
@@ -33,17 +32,9 @@ export default function SettingsScreen() {
   const hiddenCount = useLibraryStore((state) => state.hidden.length);
   const folder = useLibraryStore((state) => state.folder);
   const scan = useLibraryStore((state) => state.scan);
-  const [cacheCleared, setCacheCleared] = useState(false);
-
-  useEffect(() => {
-    if (!cacheCleared) return;
-    const timer = setTimeout(() => setCacheCleared(false), 2200);
-    return () => clearTimeout(timer);
-  }, [cacheCleared]);
-
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
-      <ScreenHeader title="Settings" subtitle="Playback, storage and credits" />
+      <ScreenHeader title="Settings" subtitle="Playback, library and credits" />
       <ScrollView
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
@@ -87,22 +78,10 @@ export default function SettingsScreen() {
           <InfoRow icon="list" label="Tracks in queue" value={String(queueLength)} />
         </Section>
 
-        <Section title="Storage">
-          <Row
-            icon="trash-outline"
-            label="Clear metadata cache"
-            hint={cacheCleared ? 'Cache cleared' : 'Lyrics and tags are cached for 7 days'}
-            onPress={() => {
-              void clearMetadataCache();
-              setCacheCleared(true);
-            }}
-          />
-        </Section>
-
         <Section title="Credits">
           <Text style={styles.credits}>
-            Metadata comes from LRCLIB, lyrics.ovh, iTunes, Deezer, MusicBrainz and the Cover Art
-            Archive. Artwork is never taken from Last.fm, whose licence forbids it.
+            Resonance scans local audio files and reads their embedded tags and artwork. Music search,
+            playback and lyrics stay on this device; no online catalog or lyrics service is used.
           </Text>
           <Text style={styles.credits}>
             Playback uses expo-audio. Version {Constants.expoConfig?.version ?? '1.0.0'}.

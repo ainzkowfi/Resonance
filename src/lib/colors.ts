@@ -25,10 +25,10 @@ function hslToHex(h: number, s: number, l: number): string {
   return `#${channel(0)}${channel(8)}${channel(4)}`;
 }
 
-/** Two-stop pastel gradient for a track, derived from its name. */
+/** Two-stop subdued gradient for a track, derived from its name. */
 export function gradientFor(seed: string): [string, string] {
   const h = hash(seed || 'resonance') % 360;
-  return [hslToHex(h, 64, 94), hslToHex((h + 38) % 360, 72, 84)];
+  return [hslToHex(h, 48, 20), hslToHex((h + 38) % 360, 58, 29)];
 }
 
 /** Accent colour for a track, used for progress and highlights. */

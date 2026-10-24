@@ -323,7 +323,33 @@ export const usePlayerStore = create<PlayerState>()(
     {
       name: 'resonance-player',
       storage: createDedupedStorage<PersistedPlayerState>(),
-      version: 1,
+      version: 2,
+      migrate: (persisted, version) => {
+        if (version < 2) {
+          const previous = persisted as PersistedPlayerState;
+          const isLocal = (track: Track | null | undefined) =>
+            Boolean(track && track.source === 'local' && !/^https?:\/\//i.test(track.uri));
+          const queue = (previous.queue ?? []).filter(isLocal);
+          const originalQueue = (previous.originalQueue ?? []).filter(isLocal);
+          const preferredId = isLocal(previous.currentTrack)
+            ? previous.currentTrack?.id
+            : previous.queue?.[previous.queueIndex]?.id;
+          const queueIndex = preferredId
+            ? queue.findIndex((track) => track.id === preferredId)
+            : -1;
+
+          return {
+            ...previous,
+            queue,
+            originalQueue,
+            queueIndex: queueIndex >= 0 ? queueIndex : 0,
+            currentTrack: queueIndex >= 0 ? queue[queueIndex] : null,
+            resumePosition: queueIndex >= 0 ? (previous.resumePosition ?? 0) : 0,
+            isPlaying: false,
+          };
+        }
+        return persisted as PersistedPlayerState;
+      },
       partialize: (state): PersistedPlayerState => ({
         queue: state.queue,
         queueIndex: state.queueIndex,
