@@ -38,6 +38,7 @@ import type { Lyrics, Track } from '../types/track';
  */
 
 const HEAD_BYTES = 512 * 1024;
+const MAX_METADATA_BYTES = 8 * 1024 * 1024;
 const TAIL_BYTES = 1024 * 1024;
 const MAX_COVER_BYTES = 3 * 1024 * 1024;
 const MAX_FILES = 6000;
@@ -108,24 +109,19 @@ interface ByteWindow {
   size: number;
 }
 
-function readWindow(uri: string, maxBytes: number): ByteWindow | undefined {
-  try {
-    const handle = new File(uri).open(FileMode.ReadOnly);
-    try {
-      const size = handle.size ?? 0;
-      const length = size > 0 ? Math.min(maxBytes, size) : maxBytes;
-      return { data: handle.readBytesSync(length), size };
-    } finally {
-      handle.close();
-    }
-  } catch {
-    return undefined;
-  }
-}
-
 async function readHead(uri: string, maxBytes: number): Promise<ByteWindow | undefined> {
-  const direct = readWindow(uri, maxBytes);
-  if (direct) return direct;
+  let handle: ReturnType<File['open']> | undefined;
+  try {
+    handle = new File(uri).open(FileMode.ReadOnly);
+    const size = handle.size ?? 0;
+    const length = size > 0 ? Math.min(maxBytes, size) : maxBytes;
+    return { data: await handle.readBytes(length), size };
+  } catch {
+    // Some MediaStore providers do not expose random access. Fall back to the
+    // regular async file read for those URIs.
+  } finally {
+    handle?.close();
+  }
   try {
     const all = await new File(uri).bytes();
     return { data: all.length > maxBytes ? all.subarray(0, maxBytes) : all, size: all.length };
@@ -163,9 +159,40 @@ interface ParsedFile {
   duration?: number;
 }
 
+/** Return the next FLAC metadata boundary when the current read cuts a block. */
+function nextFlacMetadataReadSize(bytes: Uint8Array): number | undefined {
+  if (String.fromCharCode(...bytes.subarray(0, 4)) !== 'fLaC') return undefined;
+
+  let cursor = 4;
+  while (cursor < MAX_METADATA_BYTES) {
+    if (cursor + 4 > bytes.length) return cursor + 4;
+
+    const header = bytes[cursor];
+    const length = (bytes[cursor + 1] << 16) | (bytes[cursor + 2] << 8) | bytes[cursor + 3];
+    const end = cursor + 4 + length;
+    if (end > MAX_METADATA_BYTES) return undefined;
+    if (end > bytes.length) return end;
+
+    cursor = end;
+    if ((header & 0x80) !== 0) return undefined;
+  }
+
+  return undefined;
+}
+
 async function readTrackFile(uri: string): Promise<ParsedFile> {
-  const head = await readHead(uri, HEAD_BYTES);
+  let head = await readHead(uri, HEAD_BYTES);
   if (!head) return { tags: {}, format: 'unknown' };
+
+  if (sniffFormat(head.data) === 'flac') {
+    let required = nextFlacMetadataReadSize(head.data);
+    while (required && required > head.data.length) {
+      const expanded = await readHead(uri, required);
+      if (!expanded || expanded.data.length <= head.data.length) break;
+      head = expanded;
+      required = nextFlacMetadataReadSize(head.data);
+    }
+  }
 
   const format = sniffFormat(head.data);
   let tags = parseTags(head.data);
@@ -201,13 +228,14 @@ async function cacheEmbeddedArtwork(id: string, dataUri?: string): Promise<strin
   if (!dataUri) return undefined;
   const match = dataUri.match(/^data:([^;,]+);base64,([^]*)$/);
   if (!match) return undefined;
+  if (match[2].length > Math.ceil((MAX_COVER_BYTES * 4) / 3)) return undefined;
   const mime = match[1];
   const extension = mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg';
   try {
     const directory = artworkDirectory();
     if (!directory) throw new Error('no cache directory');
     const file = new File(directory, `${artworkName(id)}.${extension}`);
-    if (!file.exists) await file.write(fromBase64(match[2]));
+    await file.write(fromBase64(match[2]));
     return file.uri;
   } catch {
     return dataUri.length <= 512 * 1024 ? dataUri : undefined;
@@ -223,7 +251,7 @@ async function cacheCoverFile(coverUri: string, id: string): Promise<string | un
     if (!directory) return undefined;
     const extension = bytes[0] === 0x89 && bytes[1] === 0x50 ? 'png' : 'jpg';
     const file = new File(directory, `${artworkName(id)}.${extension}`);
-    if (!file.exists) await file.write(bytes);
+    await file.write(bytes);
     return file.uri;
   } catch {
     return undefined;
@@ -254,14 +282,24 @@ async function buildTrack(entry: ScanEntry): Promise<Track | undefined> {
     title: tags.title ?? fromName.title ?? stemOf(entry.name) ?? entry.name,
     artist: tags.artist ?? fromName.artist ?? tags.albumArtist ?? 'Unknown Artist',
     album: tags.album,
+    albumArtist: tags.albumArtist,
     artwork,
     duration: Math.round(entry.knownDuration ?? parsed.duration ?? 0),
     genre: tags.genre,
+    composer: tags.composer,
+    conductor: tags.conductor,
+    lyricist: tags.lyricist,
+    publisher: tags.publisher,
+    copyright: tags.copyright,
+    comment: tags.comment,
+    grouping: tags.grouping,
+    encoder: tags.encoder,
     year: tags.year,
     trackNumber: tags.trackNumber,
     discNumber: tags.discNumber,
     isrc: tags.isrc,
     bpm: tags.bpm,
+    gain: tags.gain,
     lyricsUri: entry.lyricsUri,
   };
 }

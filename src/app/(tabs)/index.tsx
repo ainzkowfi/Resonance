@@ -1,8 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as Linking from 'expo-linking';
-import { useFocusEffect, useRouter } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { AppState, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { FadeIn, FadeInDown, runOnJS } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -25,8 +25,6 @@ const VIEWS = [
   { value: 'playlists' as const, label: 'Playlists' },
 ];
 
-const SYNC_INTERVAL = 4000;
-
 export default function LibraryScreen() {
   const insets = useSafeAreaInsets();
   const {
@@ -45,7 +43,6 @@ export default function LibraryScreen() {
     hydrate,
     request,
     pickFolder,
-    sync,
     setView,
   } = useLibraryStore();
   const playTracks = usePlayerStore((state) => state.playTracks);
@@ -71,19 +68,6 @@ export default function LibraryScreen() {
       if (useLibraryStore.getState().permission === 'unknown') await request();
     })();
   }, [hydrate, request]);
-
-  // Files dropped into the granted folder show up on their own. The folder is
-  // re-listed every few seconds while this tab is on screen; only new or
-  // vanished URIs cost a parse.
-  useFocusEffect(
-    useCallback(() => {
-      if (!folder) return;
-      const timer = setInterval(() => {
-        if (AppState.currentState === 'active') void sync();
-      }, SYNC_INTERVAL);
-      return () => clearInterval(timer);
-    }, [folder, sync]),
-  );
 
   const stepView = useCallback(
     (direction: number) => {
@@ -113,7 +97,9 @@ export default function LibraryScreen() {
         tracks.length > 0
           ? `${tracks.length} tracks${folder ? ' in your folder' : ' on this device'}`
           : folder
-            ? 'Reading your folder…'
+            ? scanning
+              ? 'Reading your folder…'
+              : 'No tracks found in your folder'
             : 'Your music, on your device'
       }
       action={
@@ -490,7 +476,7 @@ cta: {
 },
 ctaText: {
   ...font.label,
-  color: '#fff',
+  color: palette.bg,
 },
 ctaSecondary: {
   minHeight: HIT.min,

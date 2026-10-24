@@ -16,14 +16,6 @@ export function parseYear(date?: string): number | undefined {
   return Number.isFinite(y) && y > 1800 ? y : undefined;
 }
 
-/** `2026-01-04T00:00:00Z` -> `Jan 4, 2026`. */
-export function formatDate(date?: string): string | undefined {
-  if (!date) return undefined;
-  const d = new Date(date);
-  if (Number.isNaN(d.getTime())) return undefined;
-  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
-}
-
 export function clamp(n: number, min: number, max: number): number {
   return n < min ? min : n > max ? max : n;
 }

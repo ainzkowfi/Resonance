@@ -1,13 +1,13 @@
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   Easing,
-  runOnJS,
   useAnimatedStyle,
   useSharedValue,
   withTiming,
 } from 'react-native-reanimated';
+import { scheduleOnRN } from 'react-native-worklets';
 
 import { motion, palette } from '../theme';
 
@@ -42,8 +42,6 @@ export function ProgressBar({
   const dragging = useSharedValue(false);
   const dragAmount = useSharedValue(0);
   const dragValue = useSharedValue(0);
-  const onSeekRef = useRef<((seconds: number) => void) | undefined>(onSeek);
-  onSeekRef.current = onSeek;
 
   useEffect(() => {
     // The engine ticks every 250 ms; gliding each tick keeps the line moving.
@@ -54,9 +52,27 @@ export function ProgressBar({
     durationValue.value = duration;
   }, [duration, durationValue]);
 
-  const gesture = Gesture.Pan()
+  const updateDrag = (x: number) => {
+    if (width.value <= 0) return;
+    dragging.value = true;
+    dragAmount.value = withTiming(1, { duration: motion.fast });
+    dragValue.value = Math.min(1, Math.max(0, x / width.value));
+  };
+
+  const commitSeek = (x: number) => {
+    if (!onSeek || width.value <= 0) return;
+    const target = Math.min(1, Math.max(0, x / width.value)) * durationValue.value;
+    dragging.value = false;
+    dragAmount.value = withTiming(0, { duration: motion.fast });
+    // Keep the preview at the requested time until the audio engine reports
+    // its next position update, instead of snapping back to the old position.
+    positionValue.value = target;
+    scheduleOnRN(onSeek, target);
+  };
+
+  const pan = Gesture.Pan()
     .enabled(onSeek != null)
-    .minDistance(0)
+    .minDistance(6)
     .onBegin((event) => {
       dragging.value = true;
       dragAmount.value = withTiming(1, { duration: motion.fast });
@@ -66,14 +82,27 @@ export function ProgressBar({
       if (width.value <= 0) return;
       dragValue.value = Math.min(1, Math.max(0, event.x / width.value));
     })
-    .onEnd(() => {
-      dragging.value = false;
-      dragAmount.value = withTiming(0, { duration: motion.fast });
-      const target = dragValue.value * durationValue.value;
-      dragValue.value = 0;
-      const seek = onSeekRef.current;
-      if (seek) runOnJS(seek)(target);
+    .onEnd((event, success) => {
+      if (success) commitSeek(event.x);
+    })
+    .onFinalize((_event, success) => {
+      if (!success) {
+        dragging.value = false;
+        dragAmount.value = withTiming(0, { duration: motion.fast });
+      }
     });
+
+  const tap = Gesture.Tap()
+    .enabled(onSeek != null)
+    .maxDistance(8)
+    .onEnd((event, success) => {
+      if (success) {
+        updateDrag(event.x);
+        commitSeek(event.x);
+      }
+    });
+
+  const gesture = Gesture.Race(pan, tap);
 
   const ratio = useAnimatedStyle(() => {
     const live = durationValue.value > 0 ? positionValue.value / durationValue.value : 0;
@@ -108,7 +137,7 @@ export function ProgressBar({
 
 const styles = StyleSheet.create({
   hitArea: {
-    height: 28,
+    height: 44,
     justifyContent: 'center',
   },
   track: {

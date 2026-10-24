@@ -11,7 +11,7 @@ import { motion } from '../theme';
  * Full-bleed backdrop that follows the current track.
  *
  * The cover is blown up and blurred past recognition so every album still
- * reads as one soft colour field; a white gradient keeps the light theme
+ * reads as one soft colour field; a dark gradient keeps the theme
  * legible from status bar to controls. Tracks without art fall back to the
  * pastel gradient derived from the album name.
  */
@@ -40,19 +40,22 @@ export function AmbientBackground({ seed, artwork }: { seed: string; artwork?: s
       </Animated.View>
       {artwork ? (
         <>
-          <Image
-            source={{ uri: artwork }}
-            style={styles.image}
-            contentFit="cover"
-            blurRadius={60}
-            transition={motion.slow}
-            cachePolicy="memory-disk"
-          />
+          <View style={styles.artworkViewport}>
+            <Image
+              source={{ uri: artwork }}
+              style={StyleSheet.absoluteFill}
+              contentFit="cover"
+              contentPosition="center"
+              blurRadius={60}
+              transition={motion.slow}
+              cachePolicy="memory-disk"
+            />
+          </View>
           <LinearGradient
             colors={[
-              'rgba(255,255,255,0.94)',
-              'rgba(255,255,255,0.5)',
-              'rgba(255,255,255,0.66)',
+              'rgba(15,16,21,0.84)',
+              'rgba(15,16,21,0.58)',
+              'rgba(15,16,21,0.76)',
             ]}
             locations={[0, 0.42, 1]}
             style={StyleSheet.absoluteFill}
@@ -64,12 +67,12 @@ export function AmbientBackground({ seed, artwork }: { seed: string; artwork?: s
 }
 
 const styles = StyleSheet.create({
-  image: {
+  artworkViewport: {
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
     bottom: 0,
-    transform: [{ scale: 1.25 }],
+    overflow: 'hidden',
   },
 });

@@ -1,8 +1,8 @@
 /**
  * LRC parsing.
  *
- * LRCLIB returns the classic `[mm:ss.xx]` format. A handful of records also
- * ship the extended `[mm:ss.xx]` + `<mm:ss.xx>` word-sync variant; we only
+ * Timed lyrics use the classic `[mm:ss.xx]` format. Some local files also
+ * ship an extended `[mm:ss.xx]` + `<mm:ss.xx>` word-sync variant; we only
  * care about line-level timing here.
  */
 

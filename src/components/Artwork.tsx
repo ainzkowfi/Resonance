@@ -25,13 +25,15 @@ export function Artwork({ uri, size, borderRadius = radius.md }: ArtworkProps) {
     );
   }
   return (
-    <Image
-      source={{ uri }}
-      style={{ width: size, height: size, borderRadius }}
-      contentFit="cover"
-      transition={220}
-      cachePolicy="memory-disk"
-    />
+    <View style={[styles.imageFrame, { width: size, height: size, borderRadius }]}>
+      <Image
+        source={{ uri }}
+        style={StyleSheet.absoluteFill}
+        contentFit="contain"
+        transition={220}
+        cachePolicy="memory-disk"
+      />
+    </View>
   );
 }
 
@@ -39,6 +41,10 @@ const styles = StyleSheet.create({
   fallback: {
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: palette.surfaceHi,
+  },
+  imageFrame: {
+    overflow: 'hidden',
     backgroundColor: palette.surfaceHi,
   },
 });

@@ -59,6 +59,13 @@ function numeric(value: string | undefined): number | undefined {
   return match ? Number(match[0]) : undefined;
 }
 
+function decibels(value: string | undefined): number | undefined {
+  const match = value?.match(/[-+]?\d+(?:\.\d+)?/);
+  if (!match) return undefined;
+  const parsed = Number(match[0]);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 /* ------------------------------------------------------------------ Vorbis */
 
 function applyVorbisField(tags: TrackTags, key: string, value: string): void {
@@ -77,6 +84,38 @@ function applyVorbisField(tags: TrackTags, key: string, value: string): void {
     case 'ALBUM ARTIST':
     case 'ALBUM_ARTIST':
       tags.albumArtist ??= value;
+      break;
+    case 'COMPOSER':
+      tags.composer ??= value;
+      break;
+    case 'CONDUCTOR':
+      tags.conductor ??= value;
+      break;
+    case 'LYRICIST':
+      tags.lyricist ??= value;
+      break;
+    case 'PUBLISHER':
+    case 'LABEL':
+    case 'ORGANIZATION':
+      tags.publisher ??= value;
+      break;
+    case 'COPYRIGHT':
+      tags.copyright ??= value;
+      break;
+    case 'COMMENT':
+    case 'DESCRIPTION':
+      tags.comment ??= value;
+      break;
+    case 'GROUPING':
+    case 'CONTENTGROUP':
+      tags.grouping ??= value;
+      break;
+    case 'ENCODED_BY':
+    case 'ENCODER':
+      tags.encoder ??= value;
+      break;
+    case 'REPLAYGAIN_TRACK_GAIN':
+      tags.gain ??= decibels(value);
       break;
     case 'GENRE':
       tags.genre ??= value;
@@ -152,8 +191,8 @@ export function parseFlacPicture(bytes: Uint8Array): { mime: string; data: Uint8
   if (cursor + 4 > bytes.length) return undefined;
   const dataLength = u32be(bytes, cursor);
   cursor += 4;
-  const data = bytes.subarray(cursor, Math.min(bytes.length, cursor + dataLength));
-  if (data.length === 0) return undefined;
+  if (dataLength === 0 || cursor + dataLength > bytes.length) return undefined;
+  const data = bytes.subarray(cursor, cursor + dataLength);
   const mime = declared && declared !== '-->' ? declared : '';
   return { mime, data };
 }
@@ -312,6 +351,21 @@ export function parseMp4(bytes: Uint8Array): TrackTags {
         case '\u00a9alb':
           tags.album ??= mp4Text(bytes, item);
           break;
+        case '\u00a9wrt':
+          tags.composer ??= mp4Text(bytes, item);
+          break;
+        case '\u00a9cmt':
+          tags.comment ??= mp4Text(bytes, item);
+          break;
+        case '\u00a9cpy':
+          tags.copyright ??= mp4Text(bytes, item);
+          break;
+        case '\u00a9too':
+          tags.encoder ??= mp4Text(bytes, item);
+          break;
+        case '\u00a9grp':
+          tags.grouping ??= mp4Text(bytes, item);
+          break;
         case '\u00a9gen':
           tags.genre ??= mp4Text(bytes, item);
           break;
@@ -358,9 +412,13 @@ export function parseMp4(bytes: Uint8Array): TrackTags {
           const name = findAtom(bytes, children, 'name');
           if (!name) break;
           const label = latin1(bytes.subarray(name.body + 4, name.end));
-          if (label.toUpperCase().includes('ISRC')) {
-            const payload = mp4DataPayload(bytes, findAtom(bytes, children, 'data') ?? item);
-            if (payload) tags.isrc ??= utf8(payload.data).trim();
+          const payload = mp4DataPayload(bytes, findAtom(bytes, children, 'data') ?? item);
+          if (payload) {
+            const value = utf8(payload.data).trim();
+            const key = label.toUpperCase();
+            if (key.includes('ISRC')) tags.isrc ??= value;
+            else if (key.includes('REPLAYGAIN_TRACK_GAIN')) tags.gain ??= decibels(value);
+            else if (key.includes('PUBLISHER') || key.includes('LABEL')) tags.publisher ??= value;
           }
           break;
         }
@@ -386,6 +444,9 @@ function applyInfoField(tags: TrackTags, id: string, value: string): void {
     case 'IPRD':
       tags.album ??= value;
       break;
+    case 'ISBJ':
+      tags.composer ??= value;
+      break;
     case 'IGNR':
       tags.genre ??= value;
       break;
@@ -396,7 +457,10 @@ function applyInfoField(tags: TrackTags, id: string, value: string): void {
       tags.trackNumber ??= numeric(value);
       break;
     case 'ICMT':
-      tags.lyrics ??= value;
+      tags.comment ??= value;
+      break;
+    case 'ICOP':
+      tags.copyright ??= value;
       break;
     default:
       break;
@@ -484,6 +548,35 @@ export function parseApev2(bytes: Uint8Array): TrackTags {
         break;
       case 'album artist':
         tags.albumArtist ??= clean(utf8(value));
+        break;
+      case 'composer':
+        tags.composer ??= clean(utf8(value));
+        break;
+      case 'conductor':
+        tags.conductor ??= clean(utf8(value));
+        break;
+      case 'lyricist':
+        tags.lyricist ??= clean(utf8(value));
+        break;
+      case 'publisher':
+      case 'label':
+        tags.publisher ??= clean(utf8(value));
+        break;
+      case 'copyright':
+        tags.copyright ??= clean(utf8(value));
+        break;
+      case 'comment':
+        tags.comment ??= clean(utf8(value));
+        break;
+      case 'grouping':
+        tags.grouping ??= clean(utf8(value));
+        break;
+      case 'encoded by':
+      case 'encoder':
+        tags.encoder ??= clean(utf8(value));
+        break;
+      case 'replaygain_track_gain':
+        tags.gain ??= decibels(utf8(value));
         break;
       case 'genre':
         tags.genre ??= clean(utf8(value));
