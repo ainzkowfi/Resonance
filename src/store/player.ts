@@ -24,8 +24,6 @@ export interface PlayerState {
   duration: number;
   shuffle: boolean;
   repeat: RepeatMode;
-  /** Blend the last seconds of a track into the next one. */
-  crossfade: boolean;
   /** The unshuffled queue, kept so shuffle can be undone. */
   originalQueue: Track[];
   /** Persisted checkpoint written on pause / track change / unmount. */
@@ -39,7 +37,6 @@ export interface PlayerState {
   setRepeat: (mode: RepeatMode) => void;
   toggleShuffle: () => void;
   toggleRepeat: () => void;
-  toggleCrossfade: () => void;
   removeAt: (index: number) => void;
   moveInQueue: (from: number, to: number) => void;
   clearQueue: () => void;
@@ -61,7 +58,6 @@ interface PersistedPlayerState {
   resumePosition: number;
   shuffle: boolean;
   repeat: RepeatMode;
-  crossfade: boolean;
   originalQueue: Track[];
   isPlaying: boolean;
 }
@@ -100,13 +96,11 @@ export const usePlayerStore = create<PlayerState>()(
       duration: 0,
       shuffle: false,
       repeat: 'all',
-      crossfade: true,
       originalQueue: [],
       resumePosition: 0,
 
       playTracks: (tracks, startIndex = 0) => {
         if (tracks.length === 0) return;
-        cancelTransition();
         const index = Math.max(0, Math.min(startIndex, tracks.length - 1));
         const track = tracks[index];
         set({
@@ -124,7 +118,6 @@ export const usePlayerStore = create<PlayerState>()(
       },
 
       toggle: () => {
-        cancelTransition();
         const { isPlaying, currentTrack } = get();
         if (!currentTrack) return;
         const next = !isPlaying;
@@ -134,7 +127,6 @@ export const usePlayerStore = create<PlayerState>()(
       },
 
       next: () => {
-        cancelTransition();
         const { queue, queueIndex, repeat, currentTrack } = get();
         if (queue.length === 0) return;
 
@@ -164,7 +156,6 @@ export const usePlayerStore = create<PlayerState>()(
       },
 
       previous: () => {
-        cancelTransition();
         const { queue, queueIndex, position } = get();
         if (queue.length === 0) return;
         // Standard behaviour: restart the track if we are past the 3s mark.
@@ -192,7 +183,6 @@ export const usePlayerStore = create<PlayerState>()(
       },
 
       seek: (seconds) => {
-        cancelTransition();
         const clamped = Math.max(0, seconds);
         if (!Number.isFinite(clamped)) return;
         set({ position: clamped, resumePosition: clamped });
@@ -234,14 +224,7 @@ export const usePlayerStore = create<PlayerState>()(
         set({ repeat: repeat === 'off' ? 'all' : repeat === 'all' ? 'one' : 'off' });
       },
 
-      toggleCrossfade: () => {
-        const { crossfade } = get();
-        if (crossfade) cancelTransition();
-        set({ crossfade: !crossfade });
-      },
-
       removeAt: (index) => {
-        cancelTransition();
         const { queue, queueIndex } = get();
         if (index < 0 || index >= queue.length) return;
         const nextQueue = queue.filter((_, i) => i !== index);
@@ -289,7 +272,6 @@ export const usePlayerStore = create<PlayerState>()(
       },
 
       clearQueue: () => {
-        cancelTransition();
         set({
           queue: [],
           queueIndex: 0,
@@ -307,7 +289,6 @@ export const usePlayerStore = create<PlayerState>()(
       applyStatus: (status) => {
         const state = get();
         if (status.didJustFinish) {
-          if (crossfading) return;
           state.next();
           return;
         }
@@ -318,7 +299,6 @@ export const usePlayerStore = create<PlayerState>()(
           // reconcile once the source is actually loaded.
           isPlaying: status.isLoaded && !status.isBuffering ? status.playing : state.isPlaying,
         });
-        if (status.playing) maybeCrossfade(status.currentTime, status.duration || state.duration);
       },
     }),
     {
@@ -360,7 +340,6 @@ export const usePlayerStore = create<PlayerState>()(
         resumePosition: state.resumePosition,
         shuffle: state.shuffle,
         repeat: state.repeat,
-        crossfade: state.crossfade,
         originalQueue: state.originalQueue,
         isPlaying: false,
       }),
@@ -391,60 +370,6 @@ function restorePersistedPlayback(): void {
 
 usePlayerStore.persist.onFinishHydration(restorePersistedPlayback);
 if (usePlayerStore.persist.hasHydrated()) restorePersistedPlayback();
-
-/** Longest overlap between two tracks; short tracks fade over at most half their length. */
-const CROSSFADE_SECONDS = 6;
-/** Head start for the incoming player to prepare and buffer. */
-const CROSSFADE_PRELOAD = 1;
-
-let crossfading = false;
-
-function cancelTransition(): void {
-  audioEngine.cancelCrossfade();
-  crossfading = false;
-}
-
-/** Starts the crossfade once the current track is within its fade window. */
-function maybeCrossfade(currentTime: number, duration: number): void {
-  if (crossfading || duration <= 0) return;
-  const state = usePlayerStore.getState();
-  if (!state.crossfade) return;
-  if (!state.isPlaying || !state.currentTrack || state.queue.length === 0) return;
-  const isLast = state.queueIndex >= state.queue.length - 1;
-  if (isLast && state.repeat === 'off') return;
-  const nextIndex = state.repeat === 'one' ? state.queueIndex : isLast ? 0 : state.queueIndex + 1;
-  const track = state.queue[nextIndex];
-  if (!track) return;
-  const fade = Math.min(
-    CROSSFADE_SECONDS,
-    duration / 4,
-    track.duration > 0 ? track.duration / 4 : CROSSFADE_SECONDS,
-  );
-  if (fade < 0.5 || currentTime < duration - fade - CROSSFADE_PRELOAD) return;
-
-  crossfading = true;
-  const started = audioEngine.crossfade(
-    track,
-    fade,
-    (position) => {
-      crossfading = false;
-      usePlayerStore.setState({
-        currentTrack: track,
-        queueIndex: nextIndex,
-        isPlaying: true,
-        position,
-        duration: track.duration,
-        resumePosition: position,
-      });
-    },
-    () => {
-      crossfading = false;
-      const current = usePlayerStore.getState();
-      if (current.duration > 0 && current.position >= current.duration - 0.1) current.next();
-    },
-  );
-  if (!started) crossfading = false;
-}
 
 // The engine reports progress here; the engine itself never imports the store.
 audioEngine.setStatusListener((status) => usePlayerStore.getState().applyStatus(status));

@@ -117,7 +117,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(107,78,255,0.22)',
+    backgroundColor: palette.selectionStrong,
   },
   restoreText: {
     ...font.label,

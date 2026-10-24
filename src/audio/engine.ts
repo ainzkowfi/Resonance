@@ -35,12 +35,6 @@ class AudioEngine {
   /** Monotonic token: an in-flight load that is superseded bails out. */
   private loadToken = 0;
   private handledFinish = false;
-  private fadePlayer: AudioPlayer | null = null;
-  private fadeTrack: Track | null = null;
-  private fadeTimer: ReturnType<typeof setInterval> | null = null;
-  private fadeComplete: ((position: number) => void) | null = null;
-  private fadeAbort: (() => void) | null = null;
-  private fading = false;
   private isLoaded = false;
   private isBuffering = false;
   private pendingSeek: number | null = null;
@@ -76,7 +70,6 @@ class AudioEngine {
     options: { autoplay?: boolean; startAt?: number } = {},
   ): Promise<void> {
     await this.configure();
-    this.cancelCrossfade();
 
     if (!track.uri) {
       this.unload();
@@ -152,7 +145,6 @@ class AudioEngine {
   private bindStatus(player: AudioPlayer): void {
     this.subscription = player.addListener('playbackStatusUpdate', (status) => {
       if (!status) return;
-      if (this.fading && !status.playing) this.cancelCrossfade();
       if (status.didJustFinish && !this.handledFinish) {
         this.handledFinish = true;
       }
@@ -168,138 +160,6 @@ class AudioEngine {
         isBuffering: status.isBuffering,
       });
     });
-  }
-
-  /**
-   * Starts `track` silently and crossfades both players over `seconds` once the
-   * incoming player is actually running, then promotes it. Returns false when
-   * nothing was started.
-   */
-  crossfade(
-    track: Track,
-    seconds: number,
-    onComplete: (position: number) => void,
-    onAbort: () => void,
-  ): boolean {
-    if (this.fading || !this.player || !track.uri || seconds <= 0) return false;
-    let incoming: AudioPlayer;
-    try {
-      incoming = createAudioPlayer({ uri: track.uri }, { updateInterval: 250 });
-    } catch (error) {
-      console.warn('[audio] failed to start crossfade', error);
-      return false;
-    }
-    try {
-      incoming.volume = 0;
-      incoming.play();
-    } catch (error) {
-      try {
-        incoming.remove();
-      } catch {
-        // ignore
-      }
-      console.warn('[audio] failed to start crossfade', error);
-      return false;
-    }
-    const outgoing = this.player;
-    const total = seconds * 1000;
-    let startedAt: number | null = null;
-    const waitUntil = Date.now() + 3000;
-    this.fading = true;
-    this.fadePlayer = incoming;
-    this.fadeTrack = track;
-    this.fadeComplete = onComplete;
-    this.fadeAbort = onAbort;
-    this.fadeTimer = setInterval(() => {
-      // The incoming player needs a moment to prepare; ramping before it
-      // produces silence would make the new track pop in at full volume.
-      if (startedAt == null) {
-        if (incoming.currentTime <= 0) {
-          if (Date.now() > waitUntil) this.abortFade();
-          return;
-        }
-        startedAt = Date.now();
-      }
-      const progress = Math.min(1, (Date.now() - startedAt) / total);
-      try {
-        outgoing.volume = Math.cos((progress * Math.PI) / 2);
-        incoming.volume = Math.sin((progress * Math.PI) / 2);
-      } catch {
-        // A player was torn down underneath the fade.
-      }
-      if (progress >= 1) this.promote();
-    }, 50);
-    return true;
-  }
-
-  cancelCrossfade(): void {
-    this.clearFadeTimer();
-    const incoming = this.fadePlayer;
-    this.fadePlayer = null;
-    this.fadeTrack = null;
-    this.fadeComplete = null;
-    this.fadeAbort = null;
-    this.fading = false;
-    if (incoming) {
-      try {
-        incoming.pause();
-        incoming.remove();
-      } catch {
-        // ignore
-      }
-    }
-    if (this.player) {
-      try {
-        this.player.volume = 1;
-      } catch {
-        // ignore
-      }
-    }
-  }
-
-  private abortFade(): void {
-    const abort = this.fadeAbort;
-    this.cancelCrossfade();
-    abort?.();
-  }
-
-  private promote(): void {
-    this.clearFadeTimer();
-    const incoming = this.fadePlayer;
-    const track = this.fadeTrack;
-    const done = this.fadeComplete;
-    this.fadeAbort = null;
-    this.fadePlayer = null;
-    this.fadeTrack = null;
-    this.fadeComplete = null;
-    this.fading = false;
-    if (!incoming || !track) return;
-    const outgoing = this.player;
-    this.subscription?.remove();
-    this.subscription = null;
-    if (outgoing) {
-      try {
-        outgoing.volume = 0;
-        outgoing.pause();
-        outgoing.remove();
-      } catch {
-        // ignore
-      }
-    }
-    this.player = incoming;
-    this.loadedId = track.id;
-    this.handledFinish = false;
-    this.isLoaded = incoming.isLoaded;
-    this.isBuffering = incoming.isBuffering;
-    incoming.volume = 1;
-    this.bindStatus(incoming);
-    this.updateLockScreenMetadata(track);
-    done?.(incoming.currentTime);
-  }
-
-  private clearFadeTimer(): void {
-    if (this.fadeTimer) clearInterval(this.fadeTimer);
-    this.fadeTimer = null;
   }
 
   private applyPlayState(shouldPlay: boolean): void {
@@ -353,7 +213,6 @@ class AudioEngine {
   }
 
   unload(): void {
-    this.cancelCrossfade();
     this.loadToken++;
     this.subscription?.remove();
     this.subscription = null;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, StyleSheet, Text, View } from 'react-native';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 
@@ -8,6 +8,7 @@ import { font, palette } from '../theme';
 import type { Lyrics } from '../types/track';
 
 const LINE_HEIGHT = 54;
+const CONTENT_PADDING = 120;
 
 export interface LyricsViewProps {
   lyrics?: Lyrics;
@@ -29,6 +30,7 @@ export interface LyricsViewProps {
  */
 export function LyricsView({ lyrics, position, onSeek, scroll = true }: LyricsViewProps) {
   const listRef = useRef<FlatList<LyricLine>>(null);
+  const [centered, setCentered] = useState(false);
   const livePosition = usePlayerStore((state) => state.position);
   const current = position ?? livePosition;
 
@@ -41,9 +43,20 @@ export function LyricsView({ lyrics, position, onSeek, scroll = true }: LyricsVi
   const active = useMemo(() => activeLineIndex(synced, current), [synced, current]);
 
   useEffect(() => {
-    if (active < 0 || !listRef.current) return;
-    listRef.current.scrollToIndex({ index: active, animated: true, viewPosition: 0.35 });
-  }, [active]);
+    if (!centered || active < 0 || !listRef.current) return;
+    listRef.current.scrollToIndex({ index: active, animated: true, viewPosition: 0.5 });
+  }, [active, centered]);
+
+  const centerInitial = useCallback(() => {
+    if (centered) return;
+    if (active >= 0) {
+      // First paint should already sit at the line matching the song position.
+      // The list stays transparent until this jump lands, so there is no
+      // visible scroll from the top when lyrics are opened mid-song.
+      listRef.current?.scrollToIndex({ index: active, animated: false, viewPosition: 0.5 });
+    }
+    requestAnimationFrame(() => setCentered(true));
+  }, [active, centered]);
 
   if (!lyrics || (synced.length === 0 && plain.length === 0)) {
     return (
@@ -99,10 +112,20 @@ export function LyricsView({ lyrics, position, onSeek, scroll = true }: LyricsVi
       keyExtractor={(item, index) => `${item.time}-${index}`}
       showsVerticalScrollIndicator={false}
       contentContainerStyle={styles.content}
+      style={centered ? undefined : styles.hidden}
+      onLayout={centerInitial}
+      getItemLayout={(_, index) => ({
+        length: LINE_HEIGHT,
+        offset: CONTENT_PADDING + LINE_HEIGHT * index,
+        index,
+      })}
       initialNumToRender={12}
       windowSize={7}
       onScrollToIndexFailed={({ index, averageItemLength }) => {
-        listRef.current?.scrollToOffset({ offset: index * averageItemLength, animated: true });
+        listRef.current?.scrollToOffset({
+          offset: CONTENT_PADDING + index * averageItemLength,
+          animated: true,
+        });
       }}
       renderItem={({ item, index }) => {
         const isActive = index === active;
@@ -123,7 +146,7 @@ export function LyricsView({ lyrics, position, onSeek, scroll = true }: LyricsVi
 
 const styles = StyleSheet.create({
   content: {
-    paddingVertical: 120,
+    paddingVertical: CONTENT_PADDING,
     paddingHorizontal: 24,
   },
   plainContent: {
@@ -133,6 +156,9 @@ const styles = StyleSheet.create({
   inlineContent: {
     paddingVertical: 8,
     paddingHorizontal: 8,
+  },
+  hidden: {
+    opacity: 0,
   },
   line: {
     ...font.title,

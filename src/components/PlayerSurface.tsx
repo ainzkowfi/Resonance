@@ -33,6 +33,7 @@ import { AmbientBackground } from './AmbientBackground';
 import { Artwork } from './Artwork';
 import { PLAYER_BAR_HEIGHT } from './bottomBar';
 import { EqBars } from './EqBars';
+import { Glass } from './Glass';
 import { LyricsView } from './LyricsView';
 import { ProgressBar, type ProgressBarProps } from './ProgressBar';
 import { Touch } from './Touch';
@@ -82,6 +83,7 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
   const expand = useSharedValue(0);
   const dragX = useSharedValue(0);
   const shown = useSharedValue(0);
+  const coverOpacity = useSharedValue(1);
   const miniTrackX = useSharedValue(0);
   const miniTrackOpacity = useSharedValue(1);
   const miniGestureAxis = useSharedValue(0);
@@ -95,15 +97,22 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
   }, [track, shown]);
 
   useEffect(() => {
+    coverOpacity.value = withTiming(lyricsMode === 'over' ? 0 : 1, {
+      duration: motion.base,
+    });
+  }, [coverOpacity, lyricsMode]);
+
+  useEffect(() => {
     const direction = pendingMiniEntry.current;
     if (direction === null) return;
     pendingMiniEntry.current = null;
     if (pendingMiniInstant.current) {
-      // A completed swipe already animated the old card off-screen. Put the
-      // new track straight into place instead of sliding it in again.
+      // A completed swipe already animated the old card off-screen. Keep the
+      // new track in place and fade its title/art in instead of sliding again.
       pendingMiniInstant.current = false;
       miniTrackX.set(0);
-      miniTrackOpacity.set(1);
+      miniTrackOpacity.set(0);
+      miniTrackOpacity.set(withTiming(1, { duration: motion.base }));
       return;
     }
     miniTrackX.set(reduceMotion ? 0 : -direction * Math.min(width * 0.22, 72));
@@ -113,9 +122,17 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
   }, [miniTrackOpacity, miniTrackX, reduceMotion, track?.id, width]);
 
   const collapse = useCallback(() => {
+    // Lyrics sit on top of the cover. First drag reveals the artwork; the next
+    // one docks the player. This keeps the collapse from jumping straight from
+    // text to the mini bar.
+    if (lyricsMode === 'over') {
+      setLyricsMode('off');
+      expand.value = withTiming(1, { duration: motion.base });
+      return;
+    }
     close();
     setLyricsMode('off');
-  }, [close]);
+  }, [close, expand, lyricsMode]);
 
   const skip = useCallback(
     (direction: number) => {
@@ -143,8 +160,9 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
       if (before === after) {
         pendingMiniEntry.current = null;
         pendingMiniInstant.current = false;
-        miniTrackX.set(withSpring(0, motion.spring.snappy));
-        miniTrackOpacity.set(withTiming(1, { duration: motion.fast }));
+        miniTrackX.set(0);
+        miniTrackOpacity.set(0);
+        miniTrackOpacity.set(withTiming(1, { duration: motion.base }));
       }
     },
     [miniTrackOpacity, miniTrackX, skip],
@@ -202,6 +220,10 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
   const miniTrackStyle = useAnimatedStyle(() => ({
     opacity: miniTrackOpacity.get(),
     transform: [{ translateX: miniTrackX.get() }],
+  }));
+
+  const coverStyle = useAnimatedStyle(() => ({
+    opacity: coverOpacity.value,
   }));
 
   const nextTrack =
@@ -415,6 +437,7 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
           <View style={styles.topBar}>
             <Touch
               style={styles.iconButton}
+              glass
               onPress={collapse}
               accessibilityLabel="Close player"
             >
@@ -428,6 +451,7 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
             </View>
             <Touch
               style={styles.iconButton}
+              glass
               onPress={() => router.push('/queue')}
               accessibilityLabel="Open queue"
             >
@@ -516,7 +540,7 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
         style={[styles.mini, { bottom }, miniStyle]}
         pointerEvents={!track || expanded ? 'none' : 'box-none'}
       >
-        <View style={styles.miniGlass} pointerEvents="none" />
+        <Glass style={styles.miniGlass} intensity={76} pointerEvents="none" />
         <GestureDetector gesture={miniPan}>
           <View style={styles.miniViewport}>
             <Animated.View style={[styles.miniInner, miniTrackStyle]}>
@@ -533,6 +557,7 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
                 <EqBars active={Boolean(isPlaying)} color={palette.accentAlt} height={16} />
                 <Touch
                   style={styles.miniAction}
+                  glass
                   onPress={toggle}
                   accessibilityLabel={isPlaying ? 'Pause' : 'Play'}
                 >
@@ -554,10 +579,12 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
                   <Artwork uri={nextTrack.artwork} size={MINI_ART} borderRadius={radius.sm} />
                 </View>
                 <View style={styles.miniPreviewText}>
-                  <Text style={styles.miniPreviewLabel}>UP NEXT</Text>
-                  <Text numberOfLines={1} style={styles.miniTitle}>
-                    {nextTrack.title}
-                  </Text>
+                  <View style={styles.miniPreviewHeading}>
+                    <Text numberOfLines={1} style={[styles.miniTitle, styles.miniPreviewTitle]}>
+                      {nextTrack.title}
+                    </Text>
+                    <Text style={styles.miniPreviewLabel}>NEXT</Text>
+                  </View>
                   <Text numberOfLines={1} style={styles.miniArtist}>
                     {nextTrack.artist}
                   </Text>
@@ -574,12 +601,14 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
                   <Artwork uri={previousTrack.artwork} size={MINI_ART} borderRadius={radius.sm} />
                 </View>
                 <View style={styles.miniPreviewText}>
-                  <Text style={styles.miniPreviewLabel}>
-                    {queueIndex > 0 ? 'PREVIOUS' : 'RESTART'}
-                  </Text>
-                  <Text numberOfLines={1} style={styles.miniTitle}>
-                    {previousTrack.title}
-                  </Text>
+                  <View style={styles.miniPreviewHeading}>
+                    <Text numberOfLines={1} style={[styles.miniTitle, styles.miniPreviewTitle]}>
+                      {previousTrack.title}
+                    </Text>
+                    <Text style={styles.miniPreviewLabel}>
+                      {queueIndex > 0 ? 'PREV' : 'RESTART'}
+                    </Text>
+                  </View>
                   <Text numberOfLines={1} style={styles.miniArtist}>
                     {previousTrack.artist}
                   </Text>
@@ -606,7 +635,7 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
               <Animated.View
                 key={track.id}
                 entering={FadeIn.duration(240)}
-                style={[styles.fill, lyricsMode === 'over' && styles.coverHidden]}
+                style={[styles.fill, coverStyle]}
               >
                 <Artwork uri={track.artwork} size={stage.size} borderRadius={radius.lg} />
               </Animated.View>
@@ -636,6 +665,7 @@ function LyricsToggle({ shown, onPress }: { shown: boolean; onPress: () => void 
   return (
     <Touch
       style={[styles.lyricsPill, shown && styles.lyricsPillOn]}
+      glass={!shown}
       onPress={onPress}
       accessibilityLabel={shown ? 'Hide lyrics' : 'Show lyrics'}
     >
@@ -693,7 +723,8 @@ const styles = StyleSheet.create({
    */
   surface: {
     ...absoluteFill,
-    elevation: 24,
+    elevation: 40,
+    zIndex: 40,
   },
   full: {
     ...absoluteFill,
@@ -725,7 +756,6 @@ const styles = StyleSheet.create({
     borderRadius: HIT.min / 2,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: palette.glass,
   },
   stage: {
     flex: 1,
@@ -737,9 +767,6 @@ const styles = StyleSheet.create({
   },
   fill: {
     ...absoluteFill,
-  },
-  coverHidden: {
-    opacity: 0,
   },
 
 
@@ -814,7 +841,6 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: palette.glass,
   },
   lyricsPillOn: {
     backgroundColor: palette.text,
@@ -834,7 +860,8 @@ const styles = StyleSheet.create({
   },
   miniGlass: {
     ...absoluteFill,
-    backgroundColor: palette.surface,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: palette.glassBorder,
   },
   miniViewport: {
     flex: 1,
@@ -854,7 +881,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: MINI_PAD,
     gap: 8,
-    backgroundColor: palette.bgElevated,
+    backgroundColor: 'rgba(8,14,22,0.96)',
   },
   miniPreviewArt: {
     width: MINI_ART,
@@ -866,12 +893,27 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 1,
   },
+  miniPreviewHeading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  miniPreviewTitle: {
+    flexShrink: 1,
+  },
   miniPreviewLabel: {
     ...font.caption,
-    fontSize: 9,
-    letterSpacing: 1.1,
+    fontSize: 8,
+    letterSpacing: 0.8,
     fontWeight: '700',
     color: palette.accent,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderRadius: radius.sm,
+    backgroundColor: palette.selection,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(154,242,255,0.28)',
+    overflow: 'hidden',
   },
   miniArt: {
     width: MINI_ART,
@@ -881,7 +923,7 @@ const styles = StyleSheet.create({
     flex: 1,
     height: PLAYER_BAR_HEIGHT,
     justifyContent: 'center',
-    gap: 2,
+    gap: 1,
   },
   miniTitle: {
     ...font.label,
@@ -902,6 +944,7 @@ const styles = StyleSheet.create({
   miniAction: {
     width: HIT.comfortable,
     height: HIT.comfortable,
+    borderRadius: HIT.comfortable / 2,
     alignItems: 'center',
     justifyContent: 'center',
   },

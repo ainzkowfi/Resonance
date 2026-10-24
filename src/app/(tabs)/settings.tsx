@@ -23,8 +23,6 @@ import { font, palette, radius } from '../../theme';
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const crossfade = usePlayerStore((state) => state.crossfade);
-  const toggleCrossfade = usePlayerStore((state) => state.toggleCrossfade);
   const queueLength = usePlayerStore((state) => state.queue.length);
   const trackCount = useLibraryStore((state) => state.tracks.length);
   const minDuration = useLibraryStore((state) => state.minDuration);
@@ -39,16 +37,6 @@ export default function SettingsScreen() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        <Section title="Playback">
-          <Row
-            icon="swap-horizontal"
-            label="Crossfade"
-            hint={crossfade ? 'Fades into the next track' : 'Tracks switch instantly'}
-            value={crossfade}
-            onPress={toggleCrossfade}
-          />
-        </Section>
-
         <Section title="Library">
           <Row
             icon="refresh-outline"

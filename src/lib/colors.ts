@@ -2,8 +2,9 @@
  * Artwork-derived colours.
  *
  * Pulling the real dominant colour out of an image needs native decoding we
- * do not have, so we derive a stable hue from the artist/album name instead.
- * Same album always gets the same colour, which is what the eye notices.
+ * do not have, so we derive a stable palette from the artist/album name instead.
+ * The ramps are curated from the QuickLiquid reference so every album lands in
+ * the same cool, glassy family instead of producing arbitrary muddy hues.
  */
 
 function hash(text: string): number {
@@ -15,24 +16,30 @@ function hash(text: string): number {
   return h >>> 0;
 }
 
-function hslToHex(h: number, s: number, l: number): string {
-  const a = (s / 100) * Math.min(l / 100, 1 - l / 100);
-  const channel = (n: number) => {
-    const k = (n + h / 30) % 12;
-    const c = l / 100 - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
-    return Math.round(255 * c).toString(16).padStart(2, '0');
-  };
-  return `#${channel(0)}${channel(8)}${channel(4)}`;
+interface Ramp {
+  gradient: [string, string];
+  accent: string;
+}
+
+const RAMPS: Ramp[] = [
+  { gradient: ['#061018', '#0E3550'], accent: '#9AF2FF' },
+  { gradient: ['#070B18', '#1D2A7C'], accent: '#6D8BFF' },
+  { gradient: ['#0A0714', '#3C1F52'], accent: '#C084FC' },
+  { gradient: ['#06110F', '#0F3A2E'], accent: '#7BE5C9' },
+  { gradient: ['#120B08', '#4A2417'], accent: '#FF9D7A' },
+  { gradient: ['#081018', '#24437A'], accent: '#7DE9FF' },
+];
+
+function rampFor(seed: string): Ramp {
+  return RAMPS[hash(seed || 'resonance') % RAMPS.length];
 }
 
 /** Two-stop subdued gradient for a track, derived from its name. */
 export function gradientFor(seed: string): [string, string] {
-  const h = hash(seed || 'resonance') % 360;
-  return [hslToHex(h, 48, 20), hslToHex((h + 38) % 360, 58, 29)];
+  return rampFor(seed).gradient;
 }
 
 /** Accent colour for a track, used for progress and highlights. */
 export function accentFor(seed: string): string {
-  const h = hash(seed || 'resonance') % 360;
-  return hslToHex(h, 78, 48);
+  return rampFor(seed).accent;
 }

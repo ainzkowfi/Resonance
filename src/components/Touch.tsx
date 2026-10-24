@@ -1,10 +1,17 @@
 import * as Haptics from 'expo-haptics';
+import { LinearGradient } from 'expo-linear-gradient';
 import type { ReactNode } from 'react';
 import { useCallback } from 'react';
-import { type LayoutChangeEvent, Pressable, type StyleProp, type ViewStyle } from 'react-native';
+import {
+  type LayoutChangeEvent,
+  Pressable,
+  StyleSheet,
+  type StyleProp,
+  type ViewStyle,
+} from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
 
-import { motion } from '../theme';
+import { motion, palette } from '../theme';
 
 type Haptic = 'light' | 'medium' | 'none';
 
@@ -19,6 +26,8 @@ export interface TouchProps {
   disabled?: boolean;
   accessibilityLabel?: string;
   onLayout?: (event: LayoutChangeEvent) => void;
+  /** Adds a liquid-glass rim and a specular sweep that brightens while pressed. */
+  glass?: boolean;
 }
 
 /**
@@ -37,12 +46,18 @@ export function Touch({
   disabled,
   accessibilityLabel,
   onLayout,
+  glass,
 }: TouchProps) {
   const pressed = useSharedValue(0);
 
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: 1 - pressed.value * 0.055 }],
     opacity: 1 - pressed.value * 0.12,
+  }));
+
+  const sheenStyle = useAnimatedStyle(() => ({
+    opacity: 0.46 + pressed.value * 0.5,
+    transform: [{ translateX: pressed.value * 2 }],
   }));
 
   const handlePress = useCallback(() => {
@@ -69,9 +84,47 @@ export function Touch({
       onPressOut={() => {
         pressed.value = withSpring(0, motion.spring.snappy);
       }}
-      style={[animatedStyle, style]}
+      style={[animatedStyle, style, glass && styles.glass]}
     >
       {children}
+      {glass ? (
+        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, sheenStyle]}>
+          <LinearGradient
+            colors={[
+              palette.glassHighlight,
+              'rgba(255,255,255,0.035)',
+              'rgba(154,242,255,0.08)',
+              'rgba(255,255,255,0.015)',
+            ]}
+            locations={[0, 0.3, 0.62, 1]}
+            start={{ x: 0.08, y: 0 }}
+            end={{ x: 0.92, y: 1 }}
+            style={StyleSheet.absoluteFill}
+          />
+          <LinearGradient
+            colors={['transparent', 'rgba(255,255,255,0.42)', 'transparent']}
+            start={{ x: 0, y: 0.5 }}
+            end={{ x: 1, y: 0.5 }}
+            style={styles.rim}
+          />
+        </Animated.View>
+      ) : null}
     </AnimatedPressable>
   );
 }
+
+const styles = StyleSheet.create({
+  glass: {
+    overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: palette.glassBorder,
+    backgroundColor: palette.glass,
+  },
+  rim: {
+    position: 'absolute',
+    top: 1,
+    left: '18%',
+    right: '18%',
+    height: 1,
+  },
+});

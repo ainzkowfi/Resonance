@@ -18,6 +18,7 @@ import { create } from 'zustand';
 import { useLibraryStore } from '../store/library';
 import { font, palette, radius, shadow } from '../theme';
 import type { Track } from '../types/track';
+import { Glass } from './Glass';
 import { Touch } from './Touch';
 
 interface MenuState {
@@ -82,7 +83,7 @@ export function TrackMenu() {
         style={styles.sheetWrap}
         pointerEvents="box-none"
       >
-        <View style={[styles.sheet, { paddingBottom: insets.bottom + 12 }]}>
+        <Glass radius={radius.xl} intensity={82} style={[styles.sheet, { paddingBottom: insets.bottom + 12 }]}>
           {mode === 'edit' && track ? (
             <EditForm
               track={track}
@@ -161,7 +162,7 @@ export function TrackMenu() {
               <Row icon="trash-outline" label="Delete file" onPress={erase} destructive />
             </>
           )}
-        </View>
+        </Glass>
       </KeyboardAvoidingView>
     </Modal>
   );
@@ -309,7 +310,6 @@ const styles = StyleSheet.create({
     margin: 10,
     paddingTop: 6,
     borderRadius: radius.xl,
-    backgroundColor: palette.surface,
     ...shadow.card,
   },
   head: {

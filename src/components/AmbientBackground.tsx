@@ -53,9 +53,9 @@ export function AmbientBackground({ seed, artwork }: { seed: string; artwork?: s
           </View>
           <LinearGradient
             colors={[
-              'rgba(15,16,21,0.84)',
-              'rgba(15,16,21,0.58)',
-              'rgba(15,16,21,0.76)',
+              'rgba(4,6,12,0.86)',
+              'rgba(6,11,18,0.56)',
+              'rgba(5,12,16,0.80)',
             ]}
             locations={[0, 0.42, 1]}
             style={StyleSheet.absoluteFill}

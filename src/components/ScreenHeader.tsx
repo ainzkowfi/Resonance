@@ -21,6 +21,7 @@ export function ScreenHeader({ title, subtitle, back, action }: ScreenHeaderProp
       {back ? (
         <Touch
           style={styles.iconButton}
+          glass
           onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))}
           accessibilityLabel="Go back"
         >
@@ -46,6 +47,7 @@ export function ScreenHeader({ title, subtitle, back, action }: ScreenHeaderProp
       {action ? (
         <Touch
           style={styles.iconButton}
+          glass
           onPress={action.onPress}
           accessibilityLabel={action.label}
         >
@@ -84,6 +86,5 @@ const styles = StyleSheet.create({
     borderRadius: HIT.min / 2,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: palette.surface,
   },
 });

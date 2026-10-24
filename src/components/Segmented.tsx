@@ -92,6 +92,8 @@ const styles = StyleSheet.create({
     bottom: 3,
     borderRadius: radius.pill,
     backgroundColor: palette.bgElevated,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: palette.glassBorder,
     ...shadow.card,
   },
   label: {

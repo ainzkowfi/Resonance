@@ -22,25 +22,31 @@ export const motion = {
 } as const;
 
 /**
- * Calm dark palette. The page, cards, and raised controls use separate tones
- * so surfaces stay easy to distinguish without relying on bright white.
+ * Deep-sea glass palette. Cool near-black surfaces keep artwork colours
+ * dominant; icy cyan and mint carry interaction, with violet reserved for
+ * selection. Values follow the QuickLiquid reference, tuned for OLED screens.
  */
 export const palette = {
-  bg: '#111217',
-  bgElevated: '#262730',
-  surface: '#1B1C23',
-  surfaceHi: '#2A2B34',
-  border: 'rgba(235,235,245,0.13)',
-  borderHi: 'rgba(235,235,245,0.25)',
-  text: '#F3F2F7',
-  textDim: '#C6C6D0',
-  textFaint: '#A1A2AE',
-  accent: '#A18BFF',
-  accentAlt: '#48C9A5',
-  danger: '#FF716A',
-  scrim: 'rgba(0,0,0,0.64)',
-  glass: 'rgba(35,36,45,0.96)',
-  glassBorder: 'rgba(235,235,245,0.16)',
+  bg: '#04060C',
+  bgElevated: '#101721',
+  surface: '#0A0E16',
+  surfaceHi: '#131D27',
+  border: 'rgba(213,228,236,0.14)',
+  borderHi: 'rgba(213,228,236,0.26)',
+  text: '#EDF5F7',
+  textDim: 'rgba(237,245,247,0.72)',
+  textFaint: 'rgba(237,245,247,0.48)',
+  accent: '#9AF2FF',
+  accentAlt: '#7BE5C9',
+  accentViolet: '#C084FC',
+  danger: '#FF8C9A',
+  scrim: 'rgba(2,4,8,0.66)',
+  glass: 'rgba(10,16,25,0.62)',
+  glassTint: 'rgba(148,163,184,0.08)',
+  glassBorder: 'rgba(213,228,236,0.26)',
+  glassHighlight: 'rgba(255,255,255,0.34)',
+  selection: 'rgba(154,242,255,0.12)',
+  selectionStrong: 'rgba(154,242,255,0.20)',
 } as const;
 
 /** Minimum comfortable touch target. Apple's HIG says 44pt; we use 48 for rows. */
@@ -72,18 +78,18 @@ export const shadow = {
   card: Platform.select({
     ios: {
       shadowColor: '#000000',
-      shadowOpacity: 0.32,
-      shadowRadius: 18,
-      shadowOffset: { width: 0, height: 8 },
+      shadowOpacity: 0.36,
+      shadowRadius: 20,
+      shadowOffset: { width: 0, height: 10 },
     },
     android: { elevation: 4 },
     default: {},
   }) as object,
   glow: Platform.select({
     ios: {
-      shadowColor: '#6B4EFF',
-      shadowOpacity: 0.3,
-      shadowRadius: 24,
+      shadowColor: '#9AF2FF',
+      shadowOpacity: 0.28,
+      shadowRadius: 28,
       shadowOffset: { width: 0, height: 8 },
     },
     android: { elevation: 8 },

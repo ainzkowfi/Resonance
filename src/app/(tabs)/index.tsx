@@ -504,7 +504,7 @@ cardIcon: {
   borderRadius: radius.md,
   alignItems: 'center',
   justifyContent: 'center',
-  backgroundColor: 'rgba(124,92,255,0.16)',
+  backgroundColor: palette.selection,
 },
 cardTitle: {
   ...font.title,

@@ -1,11 +1,11 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect } from 'expo-router';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { FlatList, StyleSheet, Text, TextInput, View, type TextInputInstance } from 'react-native';
 import Animated, { FadeIn, FadeInDown, FadeOut } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BOTTOM_BAR_SPACE } from '../../components/bottomBar';
+import { Glass } from '../../components/Glass';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { TrackRow } from '../../components/TrackRow';
 import { fuzzySearch } from '../../lib/fuzzy';
@@ -20,13 +20,6 @@ export default function SearchScreen() {
   const libraryTracks = useLibraryStore((state) => state.tracks);
   const [query, setQuery] = useState('');
   const inputRef = useRef<TextInputInstance>(null);
-
-  useFocusEffect(
-    useCallback(() => {
-      const timer = setTimeout(() => inputRef.current?.focus(), 80);
-      return () => clearTimeout(timer);
-    }, []),
-  );
 
   const tracks = useMemo(
     () =>
@@ -43,7 +36,7 @@ export default function SearchScreen() {
       <ScreenHeader title="Search" subtitle="Find music on this device" />
 
       <View style={styles.searchWrap}>
-        <View style={styles.search}>
+        <Glass radius={radius.md} intensity={64} style={styles.search}>
           <Ionicons name="search" size={18} color={palette.textFaint} />
           <TextInput
             ref={inputRef}
@@ -57,7 +50,7 @@ export default function SearchScreen() {
             returnKeyType="search"
             clearButtonMode="while-editing"
           />
-        </View>
+        </Glass>
       </View>
 
       {query.trim().length > 0 ? (
@@ -71,9 +64,13 @@ export default function SearchScreen() {
       <FlatList
         data={tracks}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.listContent}
+        contentContainerStyle={[
+          styles.listContent,
+          { paddingBottom: BOTTOM_BAR_SPACE + insets.bottom + 24 },
+        ]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
         ListEmptyComponent={
           <View style={styles.empty}>
             <Text style={styles.emptyTitle}>
@@ -118,9 +115,6 @@ const styles = StyleSheet.create({
     height: HIT.comfortable,
     paddingHorizontal: 14,
     borderRadius: radius.md,
-    backgroundColor: palette.surface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: palette.border,
   },
   input: {
     flex: 1,
@@ -129,7 +123,7 @@ const styles = StyleSheet.create({
     padding: 0,
   },
   listContent: {
-    paddingBottom: BOTTOM_BAR_SPACE + 24,
+    paddingTop: 2,
   },
   sectionLabel: {
     ...font.caption,
