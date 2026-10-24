@@ -351,11 +351,18 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
           );
         }
         return;
-      }
+}
 
-      miniTrackX.set(withSpring(0, { ...motion.spring.snappy, velocity: event.velocityX }));
-      miniTrackOpacity.set(withTiming(1, { duration: motion.fast }));
-      if (expand.get() > 0.3 || event.velocityY < -600) scheduleOnRN(open);
+      // Sub-threshold horizontal: snap back instantly without spring animation
+      if (horizontal) {
+        miniTrackX.set(0);
+        miniTrackOpacity.set(1);
+      } else {
+        miniTrackX.set(withSpring(0, { ...motion.spring.snappy, velocity: event.velocityX }));
+        miniTrackOpacity.set(withTiming(1, { duration: motion.fast }));
+      }
+      const shouldOpen = !horizontal && (expand.get() > 0.3 || event.velocityY < -600);
+      if (shouldOpen) scheduleOnRN(open);
       else expand.set(withSpring(0, motion.spring.smooth));
     },
   });
@@ -437,10 +444,10 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
               {track?.album ? ` · ${track.album}` : ''}
             </Text>
           </Touch>
-          <Ionicons name="chevron-forward" size={18} color={palette.textFaint} />
+<Ionicons name="chevron-forward" size={18} color={palette.textFaint} />
         </Animated.View>
 
-        <PlayerProgress />
+        <PlayerProgress simultaneousHandlers={collapsePan} />
 
         <View style={[styles.controls, { paddingBottom: insets.bottom + 24 }]}>
           <Touch
@@ -629,14 +636,14 @@ function LyricsToggle({ shown, onPress }: { shown: boolean; onPress: () => void 
 }
 
 /** Isolated so the 4 Hz position updates only touch the scrubber. */
-function PlayerProgress() {
+function PlayerProgress({ simultaneousHandlers }: { simultaneousHandlers?: any }) {
   const position = usePlayerStore((state) => state.position);
   const duration = usePlayerStore((state) => state.duration);
   const seek = usePlayerStore((state) => state.seek);
 
   return (
     <View style={styles.progress}>
-      <ProgressBar position={position} duration={duration} onSeek={seek} color={palette.accent} />
+      <ProgressBar position={position} duration={duration} onSeek={seek} color={palette.accent} simultaneousHandlers={simultaneousHandlers} />
       <View style={styles.times}>
         <Text style={styles.time}>{formatDuration(position)}</Text>
         <Text style={styles.time}>-{formatDuration(Math.max(0, duration - position))}</Text>
@@ -889,7 +896,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     right: 0,
-    top: -12,
-    height: 28,
+    top: 0,
+    height: 4,
   },
 });

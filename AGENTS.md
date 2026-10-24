@@ -1,5 +1,11 @@
 This is an Expo/React Native mobile application. Prioritize mobile-first patterns, performance, and cross-platform compatibility.
 
+## Audit Rules
+
+- **Always re-evaluate every finding to filter out false positives** before reporting. Verify each issue against the actual code behavior.
+- **Never commit, push, or make changes without explicit permission.** Always list what needs to be changed first and ask for approval.
+- When reporting issues, categorize them by severity and provide clear evidence from the code.
+
 ## Expo has changed — do not trust your training data
 
 Expo ships breaking changes every SDK release. APIs you remember are likely renamed, moved, or removed. Before writing any code that touches an Expo, EAS, or React Native API:
