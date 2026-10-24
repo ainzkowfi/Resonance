@@ -57,6 +57,8 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
   const { width, height } = useWindowDimensions();
 
   const track = usePlayerStore((state) => state.currentTrack);
+  const queue = usePlayerStore((state) => state.queue);
+  const queueIndex = usePlayerStore((state) => state.queueIndex);
   const isPlaying = usePlayerStore((state) => state.isPlaying);
   const shuffle = usePlayerStore((state) => state.shuffle);
   const repeat = usePlayerStore((state) => state.repeat);
@@ -109,7 +111,15 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
   const skip = useCallback(
     (direction: number) => {
       if (direction < 0) next();
-      else previous();
+      else {
+        const state = usePlayerStore.getState();
+        // A mini-player swipe previews and selects the previous queue item;
+        // keep the button's usual "restart after 3 seconds" behavior intact.
+        if (state.queueIndex > 0 && state.position > 3) {
+          usePlayerStore.setState({ position: 0 });
+        }
+        previous();
+      }
     },
     [next, previous],
   );
@@ -183,6 +193,46 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
     transform: [{ translateX: miniTrackX.get() }],
   }));
 
+  const nextTrack =
+    repeat === 'one'
+      ? track
+      : queueIndex < queue.length - 1
+        ? queue[queueIndex + 1]
+        : repeat === 'all' && queue.length > 1
+          ? queue[0]
+          : null;
+  const previousTrack = queueIndex > 0 ? queue[queueIndex - 1] : track;
+  const canSwipeNext = Boolean(nextTrack);
+  const canSwipePrevious = Boolean(previousTrack);
+
+  const nextPreviewStyle = useAnimatedStyle(() => {
+    const x = miniTrackX.get();
+    const progress = interpolate(
+      -Math.min(0, x),
+      [0, Math.max(1, width * 0.62)],
+      [0, 1],
+      Extrapolation.CLAMP,
+    );
+    return {
+      opacity: progress,
+      transform: [{ translateX: width + Math.min(0, x) }],
+    };
+  }, [miniTrackX, width]);
+
+  const previousPreviewStyle = useAnimatedStyle(() => {
+    const x = miniTrackX.get();
+    const progress = interpolate(
+      Math.max(0, x),
+      [0, Math.max(1, width * 0.62)],
+      [0, 1],
+      Extrapolation.CLAMP,
+    );
+    return {
+      opacity: progress,
+      transform: [{ translateX: -width + Math.max(0, x) }],
+    };
+  }, [miniTrackX, width]);
+
   const miniStyle = useAnimatedStyle(() => {
     const visible = shown.value;
     return {
@@ -234,9 +284,16 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
     activeOffsetX: [-24, 24],
     onUpdate: (event) => {
       if (Math.abs(event.translationX) > Math.abs(event.translationY)) {
-        miniTrackX.set(reduceMotion ? 0 : event.translationX);
+        // Keep the neighbor preview under the user's finger even when reduced
+        // motion is enabled; only the release animation changes in that mode.
+        miniTrackX.set(event.translationX);
         miniTrackOpacity.set(
-          interpolate(Math.abs(event.translationX), [0, 120], [1, 0.62], Extrapolation.CLAMP),
+          interpolate(
+            Math.abs(event.translationX),
+            [0, Math.max(1, width * 0.62)],
+            [1, 0.24],
+            Extrapolation.CLAMP,
+          ),
         );
       } else {
         miniTrackX.set(0);
@@ -259,6 +316,12 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
       if (shouldSkip) {
         const swipeDirection =
           (Math.abs(event.translationX) > 72 ? event.translationX : event.velocityX) < 0 ? -1 : 1;
+        const canSkip = swipeDirection < 0 ? canSwipeNext : canSwipePrevious;
+        if (!canSkip) {
+          miniTrackX.set(withSpring(0, { ...motion.spring.snappy, velocity: event.velocityX }));
+          miniTrackOpacity.set(withTiming(1, { duration: motion.fast }));
+          return;
+        }
         if (reduceMotion) {
           miniTrackX.set(0);
           miniTrackOpacity.set(
@@ -269,9 +332,9 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
         } else {
           miniTrackOpacity.set(withTiming(0, { duration: motion.fast }));
           miniTrackX.set(
-            withSpring(
+            withTiming(
               swipeDirection * width,
-              { ...motion.spring.smooth, velocity: event.velocityX },
+              { duration: 220 },
               (finished) => {
                 if (finished) scheduleOnRN(skipFromMini, swipeDirection);
               },
@@ -429,32 +492,76 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
       >
         <Glass style={styles.miniGlass} />
         <GestureDetector gesture={miniPan}>
-          <Animated.View style={[styles.miniInner, miniTrackStyle]}>
-            <View style={styles.miniArt} />
-            <Touch style={styles.miniText} onPress={open} accessibilityLabel="Open player">
-              <Text numberOfLines={1} style={styles.miniTitle}>
-                {track?.title ?? ''}
-              </Text>
-              <Text numberOfLines={1} style={styles.miniArtist}>
-                {track?.artist ?? ''}
-              </Text>
-            </Touch>
-            <View style={styles.miniActions}>
-              <EqBars active={Boolean(isPlaying)} color={palette.accentAlt} height={16} />
-              <Touch
-                style={styles.miniAction}
-                onPress={toggle}
-                accessibilityLabel={isPlaying ? 'Pause' : 'Play'}
-              >
-                <Ionicons
-                  name={isPlaying ? 'pause' : 'play'}
-                  size={24}
-                  color={palette.text}
-                  style={!isPlaying ? styles.playIcon : undefined}
-                />
+          <View style={styles.miniViewport}>
+            <Animated.View style={[styles.miniInner, miniTrackStyle]}>
+              <View style={styles.miniArt} />
+              <Touch style={styles.miniText} onPress={open} accessibilityLabel="Open player">
+                <Text numberOfLines={1} style={styles.miniTitle}>
+                  {track?.title ?? ''}
+                </Text>
+                <Text numberOfLines={1} style={styles.miniArtist}>
+                  {track?.artist ?? ''}
+                </Text>
               </Touch>
-            </View>
-          </Animated.View>
+              <View style={styles.miniActions}>
+                <EqBars active={Boolean(isPlaying)} color={palette.accentAlt} height={16} />
+                <Touch
+                  style={styles.miniAction}
+                  onPress={toggle}
+                  accessibilityLabel={isPlaying ? 'Pause' : 'Play'}
+                >
+                  <Ionicons
+                    name={isPlaying ? 'pause' : 'play'}
+                    size={24}
+                    color={palette.text}
+                    style={!isPlaying ? styles.playIcon : undefined}
+                  />
+                </Touch>
+              </View>
+            </Animated.View>
+            {nextTrack ? (
+              <Animated.View
+                pointerEvents="none"
+                style={[styles.miniPreview, nextPreviewStyle]}
+              >
+                <View style={styles.miniPreviewArt}>
+                  <Artwork uri={nextTrack.artwork} size={MINI_ART} borderRadius={radius.sm} />
+                </View>
+                <View style={styles.miniPreviewText}>
+                  <Text style={styles.miniPreviewLabel}>UP NEXT</Text>
+                  <Text numberOfLines={1} style={styles.miniTitle}>
+                    {nextTrack.title}
+                  </Text>
+                  <Text numberOfLines={1} style={styles.miniArtist}>
+                    {nextTrack.artist}
+                  </Text>
+                </View>
+                <Ionicons name="play-forward" size={18} color={palette.accent} />
+              </Animated.View>
+            ) : null}
+            {previousTrack ? (
+              <Animated.View
+                pointerEvents="none"
+                style={[styles.miniPreview, previousPreviewStyle]}
+              >
+                <View style={styles.miniPreviewArt}>
+                  <Artwork uri={previousTrack.artwork} size={MINI_ART} borderRadius={radius.sm} />
+                </View>
+                <View style={styles.miniPreviewText}>
+                  <Text style={styles.miniPreviewLabel}>
+                    {queueIndex > 0 ? 'PREVIOUS' : 'RESTART'}
+                  </Text>
+                  <Text numberOfLines={1} style={styles.miniTitle}>
+                    {previousTrack.title}
+                  </Text>
+                  <Text numberOfLines={1} style={styles.miniArtist}>
+                    {previousTrack.artist}
+                  </Text>
+                </View>
+                <Ionicons name="play-back" size={18} color={palette.accent} />
+              </Animated.View>
+            ) : null}
+          </View>
         </GestureDetector>
         <MiniProgress />
       </Animated.View>
@@ -697,12 +804,42 @@ const styles = StyleSheet.create({
   miniGlass: {
     ...absoluteFill,
   },
+  miniViewport: {
+    flex: 1,
+    height: PLAYER_BAR_HEIGHT,
+    overflow: 'hidden',
+  },
   miniInner: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: MINI_PAD,
     gap: 8,
+  },
+  miniPreview: {
+    ...absoluteFill,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: MINI_PAD,
+    gap: 8,
+    backgroundColor: palette.bgElevated,
+  },
+  miniPreviewArt: {
+    width: MINI_ART,
+    height: MINI_ART,
+  },
+  miniPreviewText: {
+    flex: 1,
+    height: PLAYER_BAR_HEIGHT,
+    justifyContent: 'center',
+    gap: 1,
+  },
+  miniPreviewLabel: {
+    ...font.caption,
+    fontSize: 9,
+    letterSpacing: 1.1,
+    fontWeight: '700',
+    color: palette.accent,
   },
   miniArt: {
     width: MINI_ART,
