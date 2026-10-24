@@ -44,7 +44,6 @@ export function ProgressBar({
   const dragging = useSharedValue(false);
   const dragAmount = useSharedValue(0);
   const dragValue = useSharedValue(0);
-  const lastSeekTime = useSharedValue(0);
 
   useEffect(() => {
     // The engine ticks every 250 ms; gliding each tick keeps the line moving.
@@ -64,10 +63,6 @@ export function ProgressBar({
 
   const commitSeek = (x: number) => {
     if (!onSeek || width.value <= 0) return;
-    // eslint-disable-next-line react-hooks/purity
-    const now = Date.now();
-    if (now - lastSeekTime.value < 150) return; // debounce rapid seeks
-    lastSeekTime.value = now;
     const target = Math.min(1, Math.max(0, x / width.value)) * durationValue.value;
     dragging.value = false;
     dragAmount.value = withTiming(0, { duration: motion.fast });
@@ -79,6 +74,7 @@ export function ProgressBar({
 
   const pan = Gesture.Pan()
     .enabled(onSeek != null)
+    .hitSlop({ top: 10, bottom: 10 })
     .minDistance(6)
     .onBegin((event) => {
       dragging.value = true;
@@ -101,6 +97,7 @@ export function ProgressBar({
 
   const tap = Gesture.Tap()
     .enabled(onSeek != null && duration > 0)
+    .hitSlop({ top: 10, bottom: 10 })
     .maxDistance(8)
     .onEnd((event, success) => {
       if (success) {
@@ -109,11 +106,14 @@ export function ProgressBar({
       }
     });
 
-  const gesture = Gesture.Race(pan, tap);
-
   if (simultaneousHandlers) {
-    (gesture as any).simultaneousWithExternalGesture(simultaneousHandlers);
+    const handlers = Array.isArray(simultaneousHandlers)
+      ? simultaneousHandlers
+      : [simultaneousHandlers];
+    pan.simultaneousWithExternalGesture(...handlers);
   }
+
+  const gesture = Gesture.Race(pan, tap);
 
   const ratio = useAnimatedStyle(() => {
     const live = durationValue.value > 0 ? positionValue.value / durationValue.value : 0;

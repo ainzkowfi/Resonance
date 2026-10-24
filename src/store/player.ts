@@ -5,9 +5,6 @@ import { audioEngine } from '../audio/engine';
 import { shuffleArray } from '../lib/format';
 import type { RepeatMode, Track } from '../types/track';
 
-let lastSeekTime = 0;
-const SEEK_DEBOUNCE_MS = 150;
-
 /**
  * Queue and playback state.
  *
@@ -123,7 +120,7 @@ export const usePlayerStore = create<PlayerState>()(
           shuffle: false,
           originalQueue: [],
         });
-        void audioEngine.load(track, { autoplay: true });
+        loadTrack(track, { autoplay: true });
       },
 
       toggle: () => {
@@ -163,7 +160,7 @@ export const usePlayerStore = create<PlayerState>()(
           resumePosition: 0,
           isPlaying: true,
         });
-        void audioEngine.load(track, { autoplay: true });
+        loadTrack(track, { autoplay: true });
       },
 
       previous: () => {
@@ -187,7 +184,7 @@ export const usePlayerStore = create<PlayerState>()(
             resumePosition: 0,
             isPlaying: true,
           });
-          void audioEngine.load(track, { autoplay: true });
+          loadTrack(track, { autoplay: true });
         } else {
           set({ position: 0, resumePosition: 0 });
           void audioEngine.seek(0);
@@ -197,9 +194,6 @@ export const usePlayerStore = create<PlayerState>()(
       seek: (seconds) => {
         cancelTransition();
         const clamped = Math.max(0, seconds);
-        const now = Date.now();
-        if (now - lastSeekTime < SEEK_DEBOUNCE_MS) return;
-        lastSeekTime = now;
         set({ position: clamped, resumePosition: clamped });
         void audioEngine.seek(clamped);
       },
@@ -277,7 +271,7 @@ export const usePlayerStore = create<PlayerState>()(
             duration: track.duration,
             resumePosition: 0,
           });
-          void audioEngine.load(track, { autoplay: true });
+          loadTrack(track, { autoplay: true });
           return;
         }
         set({ queue: nextQueue, queueIndex: nextIndex });
@@ -370,6 +364,30 @@ export const usePlayerStore = create<PlayerState>()(
     },
   ),
 );
+
+/** Load through one place so a failed native load can never surface as an unhandled rejection. */
+function loadTrack(track: Track, options?: { autoplay?: boolean; startAt?: number }): void {
+  void audioEngine.load(track, options).catch(() => {
+    if (usePlayerStore.getState().currentTrack?.id === track.id) {
+      usePlayerStore.setState({ isPlaying: false });
+    }
+  });
+}
+
+let didRestore = false;
+
+/** Put the persisted track back into the engine on a cold start. */
+function restorePersistedPlayback(): void {
+  if (didRestore) return;
+  didRestore = true;
+  const state = usePlayerStore.getState();
+  if (!state.currentTrack || state.isPlaying) return;
+  usePlayerStore.setState({ position: state.resumePosition });
+  loadTrack(state.currentTrack, { startAt: state.resumePosition });
+}
+
+usePlayerStore.persist.onFinishHydration(restorePersistedPlayback);
+if (usePlayerStore.persist.hasHydrated()) restorePersistedPlayback();
 
 /** Longest overlap between two tracks; short tracks fade over at most half their length. */
 const CROSSFADE_SECONDS = 6;

@@ -34,7 +34,7 @@ import { Artwork } from './Artwork';
 import { PLAYER_BAR_HEIGHT } from './bottomBar';
 import { EqBars } from './EqBars';
 import { LyricsView } from './LyricsView';
-import { ProgressBar } from './ProgressBar';
+import { ProgressBar, type ProgressBarProps } from './ProgressBar';
 import { Touch } from './Touch';
 
 type LyricsMode = 'off' | 'over';
@@ -636,7 +636,11 @@ function LyricsToggle({ shown, onPress }: { shown: boolean; onPress: () => void 
 }
 
 /** Isolated so the 4 Hz position updates only touch the scrubber. */
-function PlayerProgress({ simultaneousHandlers }: { simultaneousHandlers?: any }) {
+function PlayerProgress({
+  simultaneousHandlers,
+}: {
+  simultaneousHandlers?: ProgressBarProps['simultaneousHandlers'];
+}) {
   const position = usePlayerStore((state) => state.position);
   const duration = usePlayerStore((state) => state.duration);
   const seek = usePlayerStore((state) => state.seek);

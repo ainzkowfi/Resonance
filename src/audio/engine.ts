@@ -43,6 +43,8 @@ class AudioEngine {
   private fading = false;
   private isLoaded = false;
   private isBuffering = false;
+  private pendingSeek: number | null = null;
+  private seeking = false;
 
   setStatusListener(listener: StatusListener | null): void {
     this.listener = listener;
@@ -90,27 +92,43 @@ class AudioEngine {
     const token = ++this.loadToken;
     this.loadedId = track.id;
     this.handledFinish = false;
+    let player: AudioPlayer | null = null;
 
     try {
-      const player = createAudioPlayer({ uri: track.uri }, { updateInterval: 250 });
+      player = createAudioPlayer({ uri: track.uri }, { updateInterval: 250 });
       if (token !== this.loadToken) {
         player.remove();
         return;
       }
       this.player = player;
 
+      // Seeking before the source is loaded can take the native player down.
+      // Keep the requested position until a loaded status arrives.
+      if (options.startAt && options.startAt > 0) {
+        this.pendingSeek = options.startAt;
+      }
+
       this.bindStatus(player);
 
       this.updateLockScreenMetadata(track);
 
-      if (options.startAt && options.startAt > 0) {
-        await player.seekTo(options.startAt);
-      }
       if (options.autoplay) player.play();
     } catch (error) {
+      if (player) {
+        try {
+          player.remove();
+        } catch {
+          // ignore
+        }
+      }
       if (token !== this.loadToken) return;
+      if (this.player === player) {
+        this.subscription?.remove();
+        this.subscription = null;
+        this.player = null;
+      }
       this.loadedId = null;
-      this.player = null;
+      this.pendingSeek = null;
       console.warn('[audio] failed to load track', error);
       throw error;
     }
@@ -140,6 +158,7 @@ class AudioEngine {
       }
       this.isLoaded = status.isLoaded;
       this.isBuffering = status.isBuffering;
+      if (this.isLoaded && !this.isBuffering) void this.flushSeek();
       this.listener?.({
         currentTime: status.currentTime ?? 0,
         duration: status.duration ?? 0,
@@ -166,9 +185,19 @@ class AudioEngine {
     let incoming: AudioPlayer;
     try {
       incoming = createAudioPlayer({ uri: track.uri }, { updateInterval: 250 });
+    } catch (error) {
+      console.warn('[audio] failed to start crossfade', error);
+      return false;
+    }
+    try {
       incoming.volume = 0;
       incoming.play();
     } catch (error) {
+      try {
+        incoming.remove();
+      } catch {
+        // ignore
+      }
       console.warn('[audio] failed to start crossfade', error);
       return false;
     }
@@ -260,6 +289,8 @@ class AudioEngine {
     this.player = incoming;
     this.loadedId = track.id;
     this.handledFinish = false;
+    this.isLoaded = incoming.isLoaded;
+    this.isBuffering = incoming.isBuffering;
     incoming.volume = 1;
     this.bindStatus(incoming);
     this.updateLockScreenMetadata(track);
@@ -290,18 +321,35 @@ class AudioEngine {
   }
 
   async seek(seconds: number): Promise<void> {
-    if (!this.player || !this.isLoaded || this.isBuffering) return;
+    if (!this.player) return;
+    // Keep only the newest target. A seek issued while the source is loading
+    // or buffering is applied as soon as the player reports that it is ready.
+    this.pendingSeek = Math.max(0, seconds);
+    await this.flushSeek();
+  }
+
+  private async flushSeek(): Promise<void> {
+    if (this.seeking || this.pendingSeek == null) return;
+    const player = this.player;
+    if (!player || !this.isLoaded || this.isBuffering) return;
+
+    const target = this.pendingSeek;
+    this.pendingSeek = null;
+    this.seeking = true;
     try {
-      await this.player.seekTo(Math.max(0, seconds));
+      await player.seekTo(target);
     } catch {
       // ignore
+    } finally {
+      this.seeking = false;
     }
+    if (this.pendingSeek != null) await this.flushSeek();
   }
 
   replay(): void {
     if (!this.player) return;
-    void this.player.seekTo(0);
-    this.player.play();
+    void this.seek(0);
+    this.play();
   }
 
   unload(): void {
@@ -311,6 +359,7 @@ class AudioEngine {
     this.subscription = null;
     this.isLoaded = false;
     this.isBuffering = false;
+    this.pendingSeek = null;
     if (this.player) {
       try {
         this.player.pause();

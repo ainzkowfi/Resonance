@@ -430,10 +430,7 @@ export async function scanMediaStore(options: ScanOptions = {}): Promise<Track[]
 }
 
 export async function scanLocalLibrary(options: ScanOptions = {}): Promise<Track[]> {
-  if (options.folder) {
-    const tracks = await scanFolder(options.folder, options);
-    if (tracks.length > 0) return tracks;
-  }
+  if (options.folder) return scanFolder(options.folder, options);
   return scanMediaStore(options);
 }
 

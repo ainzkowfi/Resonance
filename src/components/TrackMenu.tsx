@@ -156,7 +156,7 @@ export function TrackMenu() {
                   {track?.title}
                 </Text>
                 <Text style={styles.subtitle} numberOfLines={1}>
-                  {[track?.artist, track?.album].filter(Boolean).join(' A· ')}
+                  {[track?.artist, track?.album].filter(Boolean).join(' · ')}
                 </Text>
               </View>
               <Row icon="create-outline" label="Edit metadata" onPress={() => setMode('edit')} />
