@@ -108,24 +108,19 @@ interface ByteWindow {
   size: number;
 }
 
-function readWindow(uri: string, maxBytes: number): ByteWindow | undefined {
-  try {
-    const handle = new File(uri).open(FileMode.ReadOnly);
-    try {
-      const size = handle.size ?? 0;
-      const length = size > 0 ? Math.min(maxBytes, size) : maxBytes;
-      return { data: handle.readBytesSync(length), size };
-    } finally {
-      handle.close();
-    }
-  } catch {
-    return undefined;
-  }
-}
-
 async function readHead(uri: string, maxBytes: number): Promise<ByteWindow | undefined> {
-  const direct = readWindow(uri, maxBytes);
-  if (direct) return direct;
+  let handle: ReturnType<File['open']> | undefined;
+  try {
+    handle = new File(uri).open(FileMode.ReadOnly);
+    const size = handle.size ?? 0;
+    const length = size > 0 ? Math.min(maxBytes, size) : maxBytes;
+    return { data: await handle.readBytes(length), size };
+  } catch {
+    // Some MediaStore providers do not expose random access. Fall back to the
+    // regular async file read for those URIs.
+  } finally {
+    handle?.close();
+  }
   try {
     const all = await new File(uri).bytes();
     return { data: all.length > maxBytes ? all.subarray(0, maxBytes) : all, size: all.length };

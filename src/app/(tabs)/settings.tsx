@@ -1,10 +1,15 @@
 import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Animated, { FadeInDown, runOnJS } from 'react-native-reanimated';
+import Animated, {
+  FadeInDown,
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+} from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BOTTOM_BAR_SPACE } from '../../components/bottomBar';
@@ -26,6 +31,8 @@ export default function SettingsScreen() {
   const minDuration = useLibraryStore((state) => state.minDuration);
   const setMinDuration = useLibraryStore((state) => state.setMinDuration);
   const hiddenCount = useLibraryStore((state) => state.hidden.length);
+  const folder = useLibraryStore((state) => state.folder);
+  const scan = useLibraryStore((state) => state.scan);
   const [cacheCleared, setCacheCleared] = useState(false);
 
   useEffect(() => {
@@ -52,6 +59,12 @@ export default function SettingsScreen() {
         </Section>
 
         <Section title="Library">
+          <Row
+            icon="refresh-outline"
+            label="Refresh music library"
+            hint={folder ? 'Look for tracks added to your folder' : 'Rescan music on this device'}
+            onPress={() => void scan()}
+          />
           <RangeRow
             icon="funnel-outline"
             label="Hide short tracks"
@@ -158,10 +171,13 @@ function RangeRow({
   onChange: (value: number) => void;
 }) {
   const [width, setWidth] = useState(0);
-  const step = useCallback(
-    (ratio: number) => onChange(Math.round((ratio * max) / 5) * 5),
-    [max, onChange],
-  );
+  const ratio = max > 0 ? Math.min(1, value / max) : 0;
+  const progress = useSharedValue(ratio);
+  useEffect(() => {
+    progress.value = ratio;
+  }, [progress, ratio]);
+  const fillStyle = useAnimatedStyle(() => ({ width: width * progress.value }));
+  const knobStyle = useAnimatedStyle(() => ({ left: width * progress.value - 9 }));
   const gesture = useMemo(
     () =>
       Gesture.Pan()
@@ -169,14 +185,16 @@ function RangeRow({
         .activeOffsetX([-8, 8])
         .failOffsetY([-14, 14])
         .onBegin((event) => {
-          if (width > 0) runOnJS(step)(Math.max(0, Math.min(1, event.x / width)));
+          if (width > 0) progress.value = Math.max(0, Math.min(1, event.x / width));
         })
         .onUpdate((event) => {
-          if (width > 0) runOnJS(step)(Math.max(0, Math.min(1, event.x / width)));
+          if (width > 0) progress.value = Math.max(0, Math.min(1, event.x / width));
+        })
+        .onEnd(() => {
+          runOnJS(onChange)(Math.round((progress.value * max) / 5) * 5);
         }),
-    [step, width],
+    [max, onChange, progress, width],
   );
-  const ratio = max > 0 ? Math.min(1, value / max) : 0;
 
   return (
     <View style={styles.rangeRow}>
@@ -199,9 +217,9 @@ function RangeRow({
           accessibilityLabel={`${label}, ${value} seconds`}
         >
           <View style={styles.sliderTrack}>
-            <View style={[styles.sliderFill, { width: `${ratio * 100}%` }]} />
+            <Animated.View style={[styles.sliderFill, fillStyle]} />
           </View>
-          <View style={[styles.sliderKnob, { left: ratio * Math.max(0, width - 18) }]} />
+          <Animated.View style={[styles.sliderKnob, knobStyle]} />
         </View>
       </GestureDetector>
     </View>

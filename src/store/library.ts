@@ -18,6 +18,7 @@ type LibraryView = 'tracks' | 'albums' | 'artists' | 'playlists';
 
 const FOLDER_KEY = 'resonance:music-folder';
 const PREFS_KEY = 'resonance:library-prefs';
+const LIBRARY_CACHE_KEY = 'resonance:library-cache';
 
 export interface Playlist {
   id: string;
@@ -56,6 +57,25 @@ async function loadPrefs(): Promise<LibraryPrefs> {
   }
 }
 
+async function loadLibraryCache(scope: string): Promise<Track[] | undefined> {
+  try {
+    const raw = await AsyncStorage.getItem(LIBRARY_CACHE_KEY);
+    if (!raw) return undefined;
+    const cached = JSON.parse(raw) as { scope?: string; tracks?: Track[] };
+    return cached.scope === scope && Array.isArray(cached.tracks) ? cached.tracks : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function saveLibraryCache(scope: string, tracks: Track[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(LIBRARY_CACHE_KEY, JSON.stringify({ scope, tracks }));
+  } catch {
+    // A cache failure only means the next launch has to scan again.
+  }
+}
+
 interface LibraryState extends LibraryPrefs {
   permission: PermissionState | 'unknown';
   /** Everything on disk, before the filters below. */
@@ -64,6 +84,7 @@ interface LibraryState extends LibraryPrefs {
   albums: ReturnType<typeof groupAlbums>;
   artists: ReturnType<typeof groupArtists>;
   scanning: boolean;
+  cacheLoaded: boolean;
   progress: { done: number; total: number } | null;
   error?: string;
   view: LibraryView;
@@ -140,6 +161,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   albums: [],
   artists: [],
   scanning: false,
+  cacheLoaded: false,
   progress: null,
   view: 'tracks',
 
@@ -147,21 +169,31 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     const loaded = await ensurePrefs();
     set(loaded);
     const folder = await loadMusicFolder();
-    if (!folder) return;
+    const scope = folder ?? 'media-store';
     set({ folder });
+    const cached = await loadLibraryCache(scope);
+    if (cached !== undefined) {
+      set({
+        ...derive(cached, loaded),
+        permission: folder ? 'granted' : 'unknown',
+        cacheLoaded: true,
+      });
+      return;
+    }
+    if (!folder) return;
     await get().scan();
   },
 
   request: async () => {
     const permission = await requestAudioPermission();
     set({ permission });
-    if (permission === 'granted' && !get().folder) await get().scan();
+    if (permission === 'granted' && !get().folder && !get().cacheLoaded) await get().scan();
   },
 
   pickFolder: async () => {
     const folder = await pickMusicFolder();
     if (!folder) return;
-    set({ folder });
+    set({ folder, cacheLoaded: false });
     try {
       await AsyncStorage.setItem(FOLDER_KEY, folder);
     } catch {
@@ -172,14 +204,35 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
 
   scan: async () => {
     if (get().scanning) return;
+    const folder = get().folder;
     const loaded = await ensurePrefs();
     set({ scanning: true, error: undefined, progress: { done: 0, total: 0 }, ...loaded });
     try {
+      let lastProgressAt = 0;
       const entries = await scanLocalLibrary({
-        folder: get().folder,
-        onProgress: (done, total) => set({ progress: { done, total } }),
+        folder,
+        onProgress: (done, total) => {
+          const now = Date.now();
+          if (done === total || done === 1 || now - lastProgressAt >= 1000) {
+            lastProgressAt = now;
+            set({ progress: { done, total } });
+          }
+        },
       });
-      set({ ...derive(entries, get()), scanning: false, progress: null, permission: 'granted' });
+      if (get().folder !== folder) {
+        set({ scanning: false, progress: null });
+        await get().scan();
+        return;
+      }
+      const scope = folder ?? 'media-store';
+      await saveLibraryCache(scope, entries);
+      set({
+        ...derive(entries, get()),
+        scanning: false,
+        progress: null,
+        permission: 'granted',
+        cacheLoaded: true,
+      });
     } catch (error) {
       set({
         scanning: false,
@@ -195,7 +248,10 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     syncing = true;
     try {
       const next = await syncFolder(state.folder, state.entries);
-      if (next) set(derive(next, state));
+      if (next) {
+        await saveLibraryCache(state.folder, next);
+        set(derive(next, state));
+      }
     } catch {
       // A folder that is briefly unreadable is not worth an error banner.
     } finally {
@@ -237,7 +293,9 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
       return;
     }
     const state = get();
-    set(derive(state.entries.filter((entry) => entry.uri !== track.uri), state));
+    const entries = state.entries.filter((entry) => entry.uri !== track.uri);
+    await saveLibraryCache(state.folder ?? 'media-store', entries);
+    set(derive(entries, state));
   },
 
   setMetadata: async (track, patch) => {

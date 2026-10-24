@@ -40,14 +40,17 @@ export function AmbientBackground({ seed, artwork }: { seed: string; artwork?: s
       </Animated.View>
       {artwork ? (
         <>
-          <Image
-            source={{ uri: artwork }}
-            style={styles.image}
-            contentFit="cover"
-            blurRadius={60}
-            transition={motion.slow}
-            cachePolicy="memory-disk"
-          />
+          <View style={styles.artworkViewport}>
+            <Image
+              source={{ uri: artwork }}
+              style={StyleSheet.absoluteFill}
+              contentFit="cover"
+              contentPosition="center"
+              blurRadius={60}
+              transition={motion.slow}
+              cachePolicy="memory-disk"
+            />
+          </View>
           <LinearGradient
             colors={[
               'rgba(255,255,255,0.94)',
@@ -64,12 +67,12 @@ export function AmbientBackground({ seed, artwork }: { seed: string; artwork?: s
 }
 
 const styles = StyleSheet.create({
-  image: {
+  artworkViewport: {
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
     bottom: 0,
-    transform: [{ scale: 1.25 }],
+    overflow: 'hidden',
   },
 });

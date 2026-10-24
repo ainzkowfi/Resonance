@@ -82,6 +82,8 @@ export function LyricsView({ lyrics, position, onSeek, scroll = true }: LyricsVi
             key={`${item.time}-${index}`}
             numberOfLines={1}
             onPress={onSeek ? () => onSeek(item.time) : undefined}
+            accessibilityRole={onSeek ? 'button' : undefined}
+            accessibilityLabel={onSeek ? `Seek to ${Math.floor(item.time / 60)}:${String(Math.floor(item.time % 60)).padStart(2, '0')}, ${item.text}` : undefined}
             style={[styles.line, index === active ? styles.lineActive : styles.lineIdle]}
           >
             {item.text || '♪'}
@@ -107,6 +109,8 @@ export function LyricsView({ lyrics, position, onSeek, scroll = true }: LyricsVi
           <Animated.Text
             numberOfLines={1}
             onPress={onSeek ? () => onSeek(item.time) : undefined}
+            accessibilityRole={onSeek ? 'button' : undefined}
+            accessibilityLabel={onSeek ? `Seek to ${Math.floor(item.time / 60)}:${String(Math.floor(item.time % 60)).padStart(2, '0')}, ${item.text}` : undefined}
             style={[styles.line, isActive ? styles.lineActive : styles.lineIdle]}
           >
             {item.text || '♪'}

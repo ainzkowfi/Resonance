@@ -1,6 +1,6 @@
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BackHandler,
   StyleSheet,
@@ -9,16 +9,19 @@ import {
   useWindowDimensions,
   type LayoutChangeEvent,
 } from 'react-native';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { Gesture, GestureDetector, usePanGesture } from 'react-native-gesture-handler';
 import Animated, {
   FadeIn,
   FadeOut,
+  Extrapolation,
   interpolate,
-  runOnJS,
   useAnimatedStyle,
+  useReducedMotion,
   useSharedValue,
   withSpring,
+  withTiming,
 } from 'react-native-reanimated';
+import { scheduleOnRN } from 'react-native-worklets';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useTrackInfo } from '../hooks/useTrackInfo';
@@ -62,6 +65,7 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
   const previous = usePlayerStore((state) => state.previous);
   const toggleShuffle = usePlayerStore((state) => state.toggleShuffle);
   const toggleRepeat = usePlayerStore((state) => state.toggleRepeat);
+  const seek = usePlayerStore((state) => state.seek);
 
   const expanded = usePlayerSurface((state) => state.expanded);
   const open = usePlayerSurface((state) => state.open);
@@ -69,11 +73,15 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
 
   const [lyricsMode, setLyricsMode] = useState<LyricsMode>('off');
   const [stage, setStage] = useState({ x: 0, y: 0, size: 0, top: 0, height: 0 });
+  const pendingMiniEntry = useRef<number | null>(null);
+  const reduceMotion = useReducedMotion();
   const info = useTrackInfo(track);
 
   const expand = useSharedValue(0);
   const dragX = useSharedValue(0);
   const shown = useSharedValue(0);
+  const miniTrackX = useSharedValue(0);
+  const miniTrackOpacity = useSharedValue(1);
 
   useEffect(() => {
     expand.value = withSpring(expanded ? 1 : 0, motion.spring.smooth);
@@ -82,6 +90,16 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
   useEffect(() => {
     shown.value = withSpring(track ? 1 : 0, motion.spring.smooth);
   }, [track, shown]);
+
+  useEffect(() => {
+    const direction = pendingMiniEntry.current;
+    if (direction === null) return;
+    pendingMiniEntry.current = null;
+    miniTrackX.set(reduceMotion ? 0 : -direction * Math.min(width * 0.22, 72));
+    miniTrackOpacity.set(0);
+    miniTrackX.set(withSpring(0, motion.spring.snappy));
+    miniTrackOpacity.set(withTiming(1, { duration: motion.fast }));
+  }, [miniTrackOpacity, miniTrackX, reduceMotion, track?.id, width]);
 
   const collapse = useCallback(() => {
     close();
@@ -94,6 +112,21 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
       else previous();
     },
     [next, previous],
+  );
+
+  const skipFromMini = useCallback(
+    (direction: number) => {
+      const before = usePlayerStore.getState().currentTrack?.id;
+      pendingMiniEntry.current = direction;
+      skip(direction);
+      const after = usePlayerStore.getState().currentTrack?.id;
+      if (before === after) {
+        pendingMiniEntry.current = null;
+        miniTrackX.set(withSpring(0, motion.spring.snappy));
+        miniTrackOpacity.set(withTiming(1, { duration: motion.fast }));
+      }
+    },
+    [miniTrackOpacity, miniTrackX, skip],
   );
 
   useEffect(() => {
@@ -128,17 +161,27 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
     const size = stage.size;
     const k = size > 0 ? MINI_ART / size : 1;
     return {
-      opacity: size > 0 ? 1 : 0,
+      opacity: (size > 0 ? 1 : 0) * miniTrackOpacity.get(),
       borderRadius: interpolate(e, [0, 1], [radius.sm / k, radius.lg]),
       transform: [
-        { translateX: interpolate(e, [0, 1], [miniCx - (stage.x + size / 2), 0]) + dragX.value },
+        {
+          translateX:
+            interpolate(e, [0, 1], [miniCx - (stage.x + size / 2), 0]) +
+            dragX.get() +
+            miniTrackX.get(),
+        },
         {
           translateY: interpolate(e, [0, 1], [miniCy - (stage.y + size / 2), 0]),
         },
         { scale: interpolate(e, [0, 1], [k, 1]) },
       ],
     };
-  }, [stage, miniCx, miniCy]);
+  }, [stage, miniCx, miniCy, dragX, miniTrackOpacity, miniTrackX]);
+
+  const miniTrackStyle = useAnimatedStyle(() => ({
+    opacity: miniTrackOpacity.get(),
+    transform: [{ translateX: miniTrackX.get() }],
+  }));
 
   const miniStyle = useAnimatedStyle(() => {
     const visible = shown.value;
@@ -175,10 +218,10 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
         .onEnd((event) => {
           dragX.value = withSpring(0, motion.spring.snappy);
           if (Math.abs(event.translationX) > Math.abs(event.translationY)) {
-            if (event.translationX < -70) runOnJS(next)();
-            else if (event.translationX > 70) runOnJS(previous)();
+            if (event.translationX < -70) scheduleOnRN(next);
+            else if (event.translationX > 70) scheduleOnRN(previous);
           } else if (event.translationY > 110 || event.velocityY > 900) {
-            runOnJS(collapse)();
+            scheduleOnRN(collapse);
           } else {
             expand.value = withSpring(1, motion.spring.smooth);
           }
@@ -186,26 +229,64 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
     [collapse, dragX, expand, height, next, previous],
   );
 
-  const miniPan = useMemo(
-    () =>
-      Gesture.Pan()
-        .activeOffsetY([-14, 14])
-        .activeOffsetX([-24, 24])
-        .onUpdate((event) => {
-          if (event.translationY < 0) {
-            expand.value = Math.min(1, -event.translationY / (height * 0.4));
-          }
-        })
-        .onEnd((event) => {
-          if (Math.abs(event.translationX) > Math.abs(event.translationY) && Math.abs(event.translationX) > 60) {
-            runOnJS(skip)(event.translationX < 0 ? -1 : 1);
-            return;
-          }
-          if (expand.value > 0.3 || event.velocityY < -600) runOnJS(open)();
-          else expand.value = withSpring(0, motion.spring.smooth);
-        }),
-    [expand, height, open, skip],
-  );
+  const miniPan = usePanGesture({
+    activeOffsetY: [-14, 14],
+    activeOffsetX: [-24, 24],
+    onUpdate: (event) => {
+      if (Math.abs(event.translationX) > Math.abs(event.translationY)) {
+        miniTrackX.set(reduceMotion ? 0 : event.translationX);
+        miniTrackOpacity.set(
+          interpolate(Math.abs(event.translationX), [0, 120], [1, 0.62], Extrapolation.CLAMP),
+        );
+      } else {
+        miniTrackX.set(0);
+        miniTrackOpacity.set(1);
+        if (event.translationY < 0) {
+          expand.set(Math.min(1, -event.translationY / (height * 0.4)));
+        }
+      }
+    },
+    onDeactivate: (event) => {
+      if (event.canceled) {
+        miniTrackX.set(withSpring(0, motion.spring.snappy));
+        miniTrackOpacity.set(withTiming(1, { duration: motion.fast }));
+        return;
+      }
+
+      const horizontal = Math.abs(event.translationX) > Math.abs(event.translationY);
+      const shouldSkip =
+        horizontal && (Math.abs(event.translationX) > 72 || Math.abs(event.velocityX) > 600);
+      if (shouldSkip) {
+        const swipeDirection =
+          (Math.abs(event.translationX) > 72 ? event.translationX : event.velocityX) < 0 ? -1 : 1;
+        if (reduceMotion) {
+          miniTrackX.set(0);
+          miniTrackOpacity.set(
+            withTiming(0, { duration: motion.fast }, (finished) => {
+              if (finished) scheduleOnRN(skipFromMini, swipeDirection);
+            }),
+          );
+        } else {
+          miniTrackOpacity.set(withTiming(0, { duration: motion.fast }));
+          miniTrackX.set(
+            withSpring(
+              swipeDirection * width,
+              { ...motion.spring.smooth, velocity: event.velocityX },
+              (finished) => {
+                if (finished) scheduleOnRN(skipFromMini, swipeDirection);
+              },
+            ),
+          );
+        }
+        return;
+      }
+
+      miniTrackX.set(withSpring(0, { ...motion.spring.snappy, velocity: event.velocityX }));
+      miniTrackOpacity.set(withTiming(1, { duration: motion.fast }));
+      if (expand.get() > 0.3 || event.velocityY < -600) scheduleOnRN(open);
+      else expand.set(withSpring(0, motion.spring.smooth));
+    },
+  });
 
   const collapsePan = useMemo(
     () =>
@@ -218,7 +299,7 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
           }
         })
         .onEnd((event) => {
-          if (event.translationY > 110 || event.velocityY > 900) runOnJS(collapse)();
+          if (event.translationY > 110 || event.velocityY > 900) scheduleOnRN(collapse);
           else expand.value = withSpring(1, motion.spring.smooth);
         }),
     [collapse, expand, height],
@@ -348,7 +429,7 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
       >
         <Glass style={styles.miniGlass} />
         <GestureDetector gesture={miniPan}>
-          <View style={styles.miniInner}>
+          <Animated.View style={[styles.miniInner, miniTrackStyle]}>
             <View style={styles.miniArt} />
             <Touch style={styles.miniText} onPress={open} accessibilityLabel="Open player">
               <Text numberOfLines={1} style={styles.miniTitle}>
@@ -373,7 +454,7 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
                 />
               </Touch>
             </View>
-          </View>
+          </Animated.View>
         </GestureDetector>
         <MiniProgress />
       </Animated.View>
@@ -410,7 +491,7 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
           exiting={FadeOut.duration(140)}
           style={[styles.lyricsPanel, { top: stage.top, height: stage.height }]}
         >
-          <LyricsView lyrics={lyrics} />
+          <LyricsView lyrics={lyrics} onSeek={seek} />
           <LyricsToggle shown onPress={() => setLyricsMode('off')} />
         </Animated.View>
       ) : null}
