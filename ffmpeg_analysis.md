@@ -122,16 +122,24 @@ Sound Check, and the honest thing to document in the UI.
 - **Acceptance:** a track with 4 s of lead silence starts audibly at 0:00; a
   track with a clean ending advances without a gap of silence.
 
-### P3 — Waveform polish + opt-in library analysis (~medium)
+### P3 — Waveform polish + opt-in library analysis (shipped)
 
-- Column count from available width (`~3 px` per bar) instead of a fixed 96, so
-  wide screens get detail instead of stretched bars.
-- "Analyze library" in Settings: a queue over undecoded tracks, sequential (one
-  native process at a time), progress row, cancel button, hard cap per run
-  (e.g. 200 tracks), and a battery/charging check if `expo-battery` is added —
-  otherwise: only on demand, never on launch.
-- Cache housekeeping: prune `waveforms/` entries for tracks no longer in the
+- Cache version 3 stores **512** peaks instead of 96; the scrubber resamples to
+  one bar every ~3 px (24–240 bars) at render time, so a layout change never
+  costs a decode.
+- "Analyze library" in Settings: a queue over unanalysed tracks, one native
+  process at a time, progress bar with the current title, cancel, and a hard cap
+  of 200 tracks per run. Nothing runs on launch; it is always an explicit tap.
+- Cancel is cooperative: the track being decoded finishes (bounded by the 30 s
+  timeout, typically 1–3 s) and the loop stops. State is token-guarded so a
+  cancelled run can never overwrite a newer one.
+- Counting "tracks analysed" is chunked through the event loop (250 cache probes
+  per tick), because probing thousands of files synchronously would stall the
+  screen that displays the number.
+- Cache housekeeping: a run prunes `waveforms/` entries for tracks that left the
   library.
+- **No battery gate:** adding `expo-battery` for a feature that only runs on
+  demand was not worth another native dependency.
 - **Acceptance:** 50 tracks analyse without a crash, the app stays responsive,
   and reopening the player is instant afterwards.
 

@@ -36,8 +36,12 @@ export interface TrackAnalysis {
   tail: number;
 }
 
-const CACHE_VERSION = 2;
-const BARS = 96;
+/**
+ * Stored columns. Deliberately far more than any screen shows: the scrubber
+ * resamples to its own width, so a layout change never needs a new decode.
+ */
+const CACHE_VERSION = 3;
+const BARS = 512;
 const SAMPLE_RATE = 8_000;
 /** Only the first 15 minutes are analysed: 14 MB of PCM, enough for any song. */
 const MAX_SECONDS = 900;
@@ -278,6 +282,42 @@ export async function loadAnalysis(
   const task = generate(trackId, trackUri).finally(() => inflight.delete(trackId));
   inflight.set(trackId, task);
   return task;
+}
+
+/** Cheap cache probe; used to plan an analysis run without decoding. */
+export function hasAnalysis(trackId: string): boolean {
+  try {
+    return cacheFile(trackId).exists;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Deletes cached analysis for tracks that are no longer in the library.
+ *
+ * @returns How many files were removed.
+ */
+export async function pruneAnalysis(trackIds: Iterable<string>): Promise<number> {
+  try {
+    const keep = new Set<string>();
+    for (const trackId of trackIds) keep.add(`${keyOf(trackId)}.json`);
+
+    let removed = 0;
+    for (const entry of directory(WAVEFORM_DIR).list()) {
+      if (!(entry instanceof File) || !entry.name.endsWith('.json')) continue;
+      if (keep.has(entry.name)) continue;
+      try {
+        entry.delete();
+        removed += 1;
+      } catch {
+        // Locked or already gone: not worth reporting.
+      }
+    }
+    return removed;
+  } catch {
+    return 0;
+  }
 }
 
 export async function deleteWaveform(trackId: string): Promise<void> {

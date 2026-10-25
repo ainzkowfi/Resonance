@@ -15,9 +15,11 @@ import {
   parseWav,
   sniffFormat,
 } from '../src/lib/tags.ts';
+import { planAnalysisQueue } from '../src/lib/analysisQueue.ts';
 import { buildCapabilities, condenseListing, formatReport, listNames } from '../src/lib/ffmpegReport.ts';
 import { targetFromSamples, trackGainDb, volumeForGain } from '../src/lib/leveling.ts';
 import { leadSkip, tailOut } from '../src/lib/silence.ts';
+import { columnsForWidth, resamplePeaks } from '../src/lib/waveform.ts';
 import { analyzeWav, peaksFromWav } from '../src/lib/wav.ts';
 
 let checks = 0;
@@ -670,5 +672,52 @@ ok(tailOut(5, 5) === 0, 'a track barely longer than its outro is left alone');
 ok(tailOut(Number.NaN, 5) === 0, 'an unknown duration never cuts the track');
 ok(tailOut(200, undefined) === 0, 'an unanalysed tail never cuts the track');
 ok(tailOut(200, 2) === 198, 'exactly 2 s of outro is skippable');
+
+// ------------------------------------------------------- waveform resampling
+
+ok(columnsForWidth(0) === 0, 'a zero width has no columns');
+ok(columnsForWidth(Number.NaN) === 0, 'an unknown width has no columns');
+ok(columnsForWidth(300) === 100, 'columns scale with width');
+ok(columnsForWidth(20000) === 240, 'columns are capped for very wide screens');
+ok(columnsForWidth(10) === 24, 'narrow layouts keep a minimum bar count');
+
+const stored = [0.1, 0.9, 0.2, 0.3, 0.8, 0.4, 0.5, 0.6];
+ok(resamplePeaks(stored, 4).length === 4, 'resampling produces the requested count');
+ok(resamplePeaks(stored, 4)[0] === 0.9, 'the loudest peak in each bucket survives');
+ok(resamplePeaks(stored, 8).join() === stored.join(), 'equal counts pass through unchanged');
+ok(resamplePeaks(stored, 16).length === 16, 'upsampling repeats values');
+ok(resamplePeaks([], 10).length === 0, 'no peaks means no bars');
+ok(resamplePeaks(stored, 0).length === 0, 'zero columns means no bars');
+ok(
+  resamplePeaks(stored, 3).every((value) => value >= 0 && value <= 1),
+  'resampled peaks stay normalised',
+);
+ok(
+  resamplePeaks([0.5, Number.NaN, 0.25], 3).every((value) => Number.isFinite(value)),
+  'a broken stored peak does not leak into the drawing',
+);
+
+// ----------------------------------------------------------- analysis queue
+
+const library = [
+  { id: 'a', uri: 'file:///a.mp3' },
+  { id: 'b', uri: '' },
+  { id: 'c', uri: 'file:///c.mp3' },
+  { id: 'd', uri: 'file:///d.mp3' },
+];
+const noneCached = () => false;
+const allCached = () => true;
+const cCached = (id: string) => id === 'c';
+
+ok(
+  planAnalysisQueue(library, noneCached).map((track) => track.id).join() === 'a,c,d',
+  'the queue skips tracks without a source and keeps library order',
+);
+ok(planAnalysisQueue(library, cCached).map((track) => track.id).join() === 'a,d', 'cached tracks are skipped');
+ok(planAnalysisQueue(library, allCached).length === 0, 'nothing to do when everything is cached');
+ok(planAnalysisQueue(library, noneCached, 2).length === 2, 'the queue respects the per-run cap');
+ok(planAnalysisQueue(library, noneCached, 0).length === 0, 'a zero cap plans nothing');
+ok(planAnalysisQueue([], noneCached).length === 0, 'an empty library plans nothing');
+ok(planAnalysisQueue(library, noneCached, 100).length === 3, 'a generous cap still stops at real work');
 
 console.log(`ok - ${checks} checks passed`);

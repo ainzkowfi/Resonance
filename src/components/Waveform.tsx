@@ -1,9 +1,12 @@
+import { useMemo } from 'react';
 import { StyleSheet, View } from 'react-native';
 import Animated, { type useAnimatedStyle } from 'react-native-reanimated';
 import Svg, { Rect } from 'react-native-svg';
 
+import { columnsForWidth, resamplePeaks } from '../lib/waveform';
+
 export interface WaveformProps {
-  /** Normalised 0..1 peaks, one per column. */
+  /** Stored peaks; resampled to the available width before drawing. */
   peaks: number[];
   width: number;
   height: number;
@@ -20,7 +23,7 @@ export interface WaveformProps {
  *
  * Two stacked copies of the same bars — dim for the whole track, bright inside
  * a clipped, animated-width View for the played part. The bright layer is
- * clipped on the UI thread, so scrubbing never re-renders 96 rectangles.
+ * clipped on the UI thread, so scrubbing never re-renders the bars.
  */
 export function Waveform({
   peaks,
@@ -30,12 +33,14 @@ export function Waveform({
   trackColor,
   progressStyle,
 }: WaveformProps) {
-  const slot = width / Math.max(1, peaks.length);
+  const columns = columnsForWidth(width);
+  const data = useMemo(() => resamplePeaks(peaks, columns), [peaks, columns]);
+  const slot = width / Math.max(1, data.length);
   const barWidth = Math.max(1, slot * 0.62);
   const radius = Math.min(barWidth / 2, 1.5);
 
   const bars = (fill: string) =>
-    peaks.map((peak, index) => {
+    data.map((peak, index) => {
       const barHeight = Math.max(1.5, Math.min(1, peak) * height);
       return (
         <Rect

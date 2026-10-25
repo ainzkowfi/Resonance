@@ -19,6 +19,8 @@ import { runCapabilityProbe } from '../../ffmpeg/probe';
 import { getFFmpegInfo } from '../../ffmpeg/waveform';
 import { formatDuration } from '../../lib/format';
 import { targetFromSamples } from '../../lib/leveling';
+import { MAX_TRACKS_PER_RUN } from '../../lib/analysisQueue';
+import { useAnalysisRunStore } from '../../store/analysis';
 import { formatIssues, formatTime, useDiagnosticsStore } from '../../store/diagnostics';
 import { useLibraryStore } from '../../store/library';
 import { usePlayerStore } from '../../store/player';
@@ -41,6 +43,20 @@ export default function SettingsScreen() {
   const setLeveling = usePlayerStore((state) => state.setLeveling);
   const skipSilence = usePlayerStore((state) => state.skipSilence);
   const setSkipSilence = usePlayerStore((state) => state.setSkipSilence);
+  const entries = useLibraryStore((state) => state.entries);
+  const running = useAnalysisRunStore((state) => state.running);
+  const analyzedCount = useAnalysisRunStore((state) => state.done);
+  const runTotal = useAnalysisRunStore((state) => state.total);
+  const runCurrent = useAnalysisRunStore((state) => state.current);
+  const startAnalysis = useAnalysisRunStore((state) => state.start);
+  const cancelAnalysis = useAnalysisRunStore((state) => state.cancel);
+  const analyzedTotal = useAnalysisRunStore((state) => state.analyzed);
+  const countAnalyzed = useAnalysisRunStore((state) => state.countAnalyzed);
+  const runPercent = runTotal > 0 ? Math.round((analyzedCount / runTotal) * 100) : 0;
+
+  useEffect(() => {
+    countAnalyzed(entries);
+  }, [countAnalyzed, entries]);
   const levels = usePlayerStore((state) => state.levels);
   const measured = Object.keys(levels).length;
   const targetDb = useMemo(() => targetFromSamples(Object.values(levels)), [levels]);
@@ -101,6 +117,39 @@ export default function SettingsScreen() {
             onPress={() => router.push('/hidden')}
           />
           <InfoRow icon="list" label="Tracks in queue" value={String(queueLength)} />
+        </Section>
+
+        <Section title="Analysis">
+          <InfoRow
+            icon="bar-chart-outline"
+            label="Tracks analysed"
+            value={
+              analyzedTotal == null ? 'Counting…' : `${analyzedTotal} / ${entries.length}`
+            }
+          />
+          <Row
+            icon="analytics-outline"
+            label={running ? 'Analyzing…' : 'Analyze library'}
+            hint={
+              running
+                ? `${analyzedCount} of ${runTotal}${runCurrent ? ` · ${runCurrent}` : ''}`
+                : `Waveforms, levels and silence for up to ${MAX_TRACKS_PER_RUN} tracks`
+            }
+            onPress={() => startAnalysis(entries)}
+          />
+          {running ? (
+            <>
+              <View style={styles.runBar}>
+                <View style={[styles.runFill, { width: `${runPercent}%` }]} />
+              </View>
+              <Row
+                icon="close-circle-outline"
+                label="Cancel analysis"
+                hint="Stops once the current track finishes decoding"
+                onPress={cancelAnalysis}
+              />
+            </>
+          ) : null}
         </Section>
 
         <Section title="Playback">
@@ -417,6 +466,19 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 16,
     color: palette.textDim,
+  },
+  runBar: {
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: palette.surfaceHi,
+    overflow: 'hidden',
+    marginHorizontal: 14,
+    marginTop: 2,
+    marginBottom: 10,
+  },
+  runFill: {
+    height: 4,
+    backgroundColor: palette.accent,
   },
   note: {
     ...font.label,
