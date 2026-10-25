@@ -15,9 +15,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BOTTOM_BAR_SPACE } from '../../components/bottomBar';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { Touch } from '../../components/Touch';
+import { runCapabilityProbe } from '../../ffmpeg/probe';
 import { getFFmpegInfo } from '../../ffmpeg/waveform';
 import { formatDuration } from '../../lib/format';
-import { formatIssues, useDiagnosticsStore } from '../../store/diagnostics';
+import { formatIssues, formatTime, useDiagnosticsStore } from '../../store/diagnostics';
 import { useLibraryStore } from '../../store/library';
 import { usePlayerStore } from '../../store/player';
 import { font, palette, radius } from '../../theme';
@@ -34,6 +35,8 @@ export default function SettingsScreen() {
   const scan = useLibraryStore((state) => state.scan);
   const issues = useDiagnosticsStore((state) => state.issues);
   const clearIssues = useDiagnosticsStore((state) => state.clearIssues);
+  const probe = useDiagnosticsStore((state) => state.probe);
+  const [probing, setProbing] = useState(false);
   const [ffmpeg, setFfmpeg] = useState('Checking…');
 
   useEffect(() => {
@@ -49,6 +52,12 @@ export default function SettingsScreen() {
   const diagnostics = `Resonance diagnostics\nFFmpeg: ${ffmpeg}\n${Platform.OS} ${String(
     Platform.Version,
   )}\n\n${formatIssues(issues)}`;
+
+  const capabilityHint = probing
+    ? 'Asking the binary on this device…'
+    : probe
+      ? `Checked ${formatTime(probe.at)}`
+      : 'Lists the filters and encoders this build really has';
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
@@ -88,6 +97,43 @@ export default function SettingsScreen() {
 
         <Section title="Diagnostics">
           <InfoRow icon="hardware-chip-outline" label="FFmpeg" value={ffmpeg} />
+          <Row
+            icon="search-outline"
+            label={probing ? 'Checking capabilities…' : 'Check FFmpeg capabilities'}
+            hint={capabilityHint}
+            onPress={() => {
+              if (probing) return;
+              setProbing(true);
+              void runCapabilityProbe().finally(() => setProbing(false));
+            }}
+          />
+          {probe ? (
+            <View style={styles.logBlock}>
+              {probe.capabilities.map((capability) => (
+                <View key={capability.label} style={styles.capRow}>
+                  <Ionicons
+                    name={capability.ok ? 'checkmark-circle' : 'close-circle'}
+                    size={15}
+                    color={capability.ok ? palette.accentAlt : palette.textFaint}
+                  />
+                  <View style={styles.capText}>
+                    <Text style={styles.capLabel}>{capability.label}</Text>
+                    <Text style={styles.capNote} numberOfLines={2}>
+                      {capability.note}
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          ) : null}
+          {probe ? (
+            <Row
+              icon="clipboard-outline"
+              label="Share capability report"
+              hint={`FFmpeg ${probe.version}`}
+              onPress={() => void Share.share({ message: probe.report })}
+            />
+          ) : null}
           <View style={styles.logBlock}>
             <Text style={styles.logTitle}>Recent problems</Text>
             <Text selectable style={styles.logText}>
@@ -332,6 +378,28 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 16,
     color: palette.textDim,
+  },
+  capRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    paddingVertical: 3,
+  },
+  capText: {
+    flex: 1,
+    gap: 1,
+  },
+  capLabel: {
+    ...font.label,
+    fontWeight: '600',
+    color: palette.text,
+  },
+  capNote: {
+    ...font.label,
+    fontWeight: '500',
+    fontSize: 11,
+    lineHeight: 15,
+    color: palette.textFaint,
   },
   toggle: {
     width: 46,

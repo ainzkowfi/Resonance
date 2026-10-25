@@ -5,6 +5,7 @@ import { Platform } from 'react-native';
 import { stableId } from '../lib/format';
 import { peaksFromWav } from '../lib/wav';
 import { describeError, useDiagnosticsStore } from '../store/diagnostics';
+import { ffmpegLoadFailure, loadFFmpeg, type FFmpegModule } from './module';
 
 /**
  * Waveform peaks, computed on device.
@@ -36,10 +37,6 @@ const CRASH_KEY = 'waveform:pending-run';
 const WAVEFORM_DIR = 'waveforms';
 const TEMP_DIR = 'waveform-tmp';
 
-type FFmpegModule = typeof import('ffmpeg-expo');
-
-let ffmpegPromise: Promise<FFmpegModule | null> | null = null;
-let ffmpegLoadError: string | undefined;
 /** Set for one session after a crash marker is found, so we never loop. */
 let disabledForSession = false;
 const inflight = new Map<string, Promise<Waveform | undefined>>();
@@ -53,35 +50,11 @@ function recordError(message: string, error: unknown) {
   record(message, [info.message, info.stack].filter(Boolean).join('\n'));
 }
 
-/**
- * `ffmpeg-expo` calls `requireNativeModule` at import time, which throws when
- * the installed binary does not contain it (stale dev client, web, plain Expo
- * Go). Importing lazily inside a try/catch turns that into a recorded problem
- * instead of a startup crash.
- */
-function loadFFmpeg(): Promise<FFmpegModule | null> {
-  if (!ffmpegPromise) {
-    ffmpegPromise = (async () => {
-      try {
-        return await import('ffmpeg-expo');
-      } catch (error) {
-        const info = describeError(error);
-        ffmpegLoadError = info.message;
-        record(
-          'FFmpeg is not available in this build. Waveforms need a development build that includes ffmpeg-expo.',
-          [info.message, info.stack].filter(Boolean).join('\n'),
-        );
-        return null;
-      }
-    })();
-  }
-  return ffmpegPromise;
-}
-
 export async function getFFmpegInfo(): Promise<string> {
   if (Platform.OS === 'web') return 'unavailable on web';
   const module = await loadFFmpeg();
-  if (!module) return ffmpegLoadError ? `unavailable — ${ffmpegLoadError}` : 'unavailable';
+  const failure = ffmpegLoadFailure();
+  if (!module) return failure ? `unavailable — ${failure}` : 'unavailable';
   try {
     return module.getVersion().version;
   } catch (error) {

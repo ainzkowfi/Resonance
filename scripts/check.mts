@@ -15,6 +15,7 @@ import {
   parseWav,
   sniffFormat,
 } from '../src/lib/tags.ts';
+import { buildCapabilities, condenseListing, formatReport, listNames } from '../src/lib/ffmpegReport.ts';
 import { peaksFromWav } from '../src/lib/wav.ts';
 
 let checks = 0;
@@ -514,5 +515,92 @@ ok(withJunk?.[95] === peaks?.[95], 'a junk chunk does not change the peaks');
 ok(peaksFromWav(makeWav(new Int16Array(half)), 96) === undefined, 'silence yields no waveform');
 ok(peaksFromWav(new Uint8Array(44), 96) === undefined, 'an empty WAV yields no waveform');
 ok(peaksFromWav(makeWav(tone), 0) === undefined, 'a zero bar count is rejected');
+
+// ------------------------------------------------------ ffmpeg capability probe
+
+const filterListing = [
+  'Filters:',
+  ' T.. = Timeline support',
+  ' TSC aformat         A->A       Convert the input audio to one of the specified formats.',
+  ' ..C atrim           A->A       Pick one continuous section from the input.',
+  ' T.. volume          A->A       Change input volume.',
+  ' ... loudnorm        A->A       EBU R128 loudness normalization.',
+  ' ... showwavespic    A->V       Draw a waveform.',
+  ' ... vflip           V->V       Flip the input video vertically.',
+].join('\n');
+
+const encoderListing = [
+  'Encoders:',
+  ' V..... = Video',
+  ' A.... = Audio',
+  ' A..... aac            AAC (Advanced Audio Coding)',
+  ' A..... libmp3lame     libmp3lame MP3 (MPEG audio layer 3)',
+].join('\n');
+
+const muxerListing = [
+  'File formats:',
+  '  E  mp4             MP4 (MPEG-4 Part 14)',
+  '  E  ipod            iPod H.264 MP4',
+  '  E  wav             WAV / WAVE (Waveform Audio)',
+].join('\n');
+
+const decoderListing = [
+  'Decoders:',
+  ' A.... pcm_s16le        PCM signed 16-bit little-endian',
+  ' A.... flac             FLAC (Free Lossless Audio Codec)',
+].join('\n');
+
+const names = listNames(filterListing);
+ok(names.has('atrim') && names.has('volume'), 'filter names are parsed out of the listing');
+ok(names.has('aformat'), 'names with unusual flags columns are still parsed');
+ok(!names.has('filters:'), 'header lines are ignored');
+ok(listNames(muxerListing).has('mp4'), 'two-character flag columns are parsed');
+ok(listNames(decoderListing).has('pcm_s16le'), 'decoder names are parsed');
+
+const full = buildCapabilities({
+  filters: filterListing,
+  encoders: encoderListing,
+  muxers: muxerListing,
+  decoders: decoderListing,
+});
+const byLabel = (label: string) => full.find((item) => item.label === label);
+ok(byLabel('Waveform decode (PCM → WAV)')?.ok === true, 'waveform decode is detected');
+ok(byLabel('AAC encoder')?.ok === true, 'aac encoder is detected');
+ok(byLabel('MP4 / M4A muxer')?.ok === true, 'mp4 muxer is detected');
+ok(byLabel('Trim filter')?.ok === true, 'trim filter is detected');
+ok(byLabel('MP3 encoder (libmp3lame)')?.ok === true, 'libmp3lame is reported when present');
+ok(full.length === 9, `expected 9 capabilities, got ${full.length}`);
+
+const empty = buildCapabilities({ filters: '', encoders: '', muxers: '', decoders: '' });
+ok(empty.every((item) => !item.ok), 'an empty listing reports nothing as supported');
+ok(
+  buildCapabilities({
+    filters: filterListing,
+    encoders: encoderListing,
+    muxers: muxerListing,
+    decoders: '',
+  }).find((item) => item.label === 'Waveform decode (PCM → WAV)')?.ok === false,
+  'a missing decoder marks waveform decode as unsupported',
+);
+
+const condensed = condenseListing(filterListing);
+ok(condensed.every((line) => !line.includes('vflip')), 'unrelated filters are dropped from the report');
+ok(condensed.some((line) => line.includes('volume')), 'relevant filters are kept');
+ok(condenseListing(filterListing, 2).length === 2, 'the condensed listing honours the line cap');
+
+const report = formatReport({
+  version: '6.1.1',
+  device: 'android 34',
+  capabilities: full,
+  listings: {
+    filters: filterListing,
+    encoders: encoderListing,
+    muxers: muxerListing,
+    decoders: decoderListing,
+  },
+});
+ok(report.includes('6.1.1'), 'the report carries the version');
+ok(report.includes('[yes] AAC encoder'), 'supported capabilities are marked');
+ok(!report.includes('vflip'), 'the shared report stays filtered');
 
 console.log(`ok - ${checks} checks passed`);

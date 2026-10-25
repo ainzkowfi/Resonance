@@ -1,6 +1,8 @@
 import { Platform } from 'react-native';
 import { create } from 'zustand';
 
+import type { Capability } from '../lib/ffmpegReport';
+
 /**
  * In-memory crash / failure log.
  *
@@ -26,15 +28,26 @@ export interface FatalError {
   componentStack?: string;
 }
 
+/** Result of the on-device FFmpeg capability check. */
+export interface ProbeReport {
+  at: number;
+  version: string;
+  capabilities: Capability[];
+  /** Compact, shareable text. */
+  report: string;
+}
+
 const MAX_ISSUES = 12;
 
 interface DiagnosticsState {
   issues: DiagnosticIssue[];
   fatal: FatalError | null;
+  probe: ProbeReport | null;
   addIssue: (scope: string, message: string, detail?: string) => void;
   clearIssues: () => void;
   setFatal: (error: unknown, componentStack?: string) => void;
   clearFatal: () => void;
+  setProbe: (probe: ProbeReport) => void;
 }
 
 let seq = 0;
@@ -42,6 +55,7 @@ let seq = 0;
 export const useDiagnosticsStore = create<DiagnosticsState>((set) => ({
   issues: [],
   fatal: null,
+  probe: null,
   addIssue: (scope, message, detail) =>
     set((state) => ({
       issues: [
@@ -52,6 +66,7 @@ export const useDiagnosticsStore = create<DiagnosticsState>((set) => ({
   clearIssues: () => set({ issues: [] }),
   setFatal: (error, componentStack) => set({ fatal: describeError(error, componentStack) }),
   clearFatal: () => set({ fatal: null }),
+  setProbe: (probe) => set({ probe }),
 }));
 
 export function describeError(error: unknown, componentStack?: string): FatalError {
