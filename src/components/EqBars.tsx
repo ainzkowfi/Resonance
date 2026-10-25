@@ -10,6 +10,9 @@ import Animated, {
 
 const DURATIONS = [420, 300, 520];
 
+/** Bars never fully collapse, so the row still reads as an equaliser at rest. */
+const MIN_FILL = 0.16;
+
 interface EqBarsProps {
   active: boolean;
   color: string;
@@ -21,23 +24,13 @@ export function EqBars({ active, color, height = 16 }: EqBarsProps) {
   return (
     <View style={[styles.row, { height }]}>
       {[0, 1, 2].map((index) => (
-        <EqBar key={index} index={index} active={active} color={color} height={height} />
+        <EqBar key={index} index={index} active={active} color={color} />
       ))}
     </View>
   );
 }
 
-function EqBar({
-  index,
-  active,
-  color,
-  height,
-}: {
-  index: number;
-  active: boolean;
-  color: string;
-  height: number;
-}) {
+function EqBar({ index, active, color }: { index: number; active: boolean; color: string }) {
   const pulse = useSharedValue(0);
 
   useEffect(() => {
@@ -53,8 +46,10 @@ function EqBar({
     );
   }, [active, index, pulse]);
 
+  // Scale rather than height: a transform is composited on the UI thread,
+  // while animating height relayouts the row on every frame.
   const animatedStyle = useAnimatedStyle(() => ({
-    height: 3 + pulse.value * (height - 3),
+    transform: [{ scaleY: MIN_FILL + pulse.value * (1 - MIN_FILL) }],
   }));
 
   return <Animated.View style={[styles.bar, { backgroundColor: color }, animatedStyle]} />;
@@ -68,6 +63,8 @@ const styles = StyleSheet.create({
   },
   bar: {
     width: 3,
+    height: '100%',
     borderRadius: 2,
+    transformOrigin: '50% 100%',
   },
 });

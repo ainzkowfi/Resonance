@@ -11,6 +11,8 @@ export const motion = {
   slow: 300,
   /** Lyrics scroll between lines. */
   lyric: 260,
+  /** One full pass of the highlight drifting across a glass surface. */
+  liquid: 7200,
   spring: {
     /** Snappy, for taps and small elements. */
     snappy: { damping: 18, stiffness: 320, mass: 0.7 },
@@ -44,6 +46,8 @@ export const palette = {
   glass: 'rgba(10,16,25,0.62)',
   glassTint: 'rgba(148,163,184,0.08)',
   glassBorder: 'rgba(213,228,236,0.26)',
+  /** Perimeter of a glass surface: visible, but never bright enough to read as a rule. */
+  glassEdge: 'rgba(213,228,236,0.16)',
   glassHighlight: 'rgba(255,255,255,0.34)',
   selection: 'rgba(154,242,255,0.12)',
   selectionStrong: 'rgba(154,242,255,0.20)',

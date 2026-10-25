@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
-  Easing,
   useAnimatedStyle,
+  useFrameCallback,
   useSharedValue,
   withTiming,
 } from 'react-native-reanimated';
@@ -61,13 +61,15 @@ export function ProgressBar({
   waveformHeight = 44,
 }: ProgressBarProps) {
   const width = useSharedValue(0);
-  const positionValue = useSharedValue(0);
+  const positionValue = useSharedValue(position);
   const durationValue = useSharedValue(0);
   const dragging = useSharedValue(false);
   const dragAmount = useSharedValue(0);
   const dragValue = useSharedValue(0);
   const [layoutWidth, setLayoutWidth] = useState(0);
   const currentTrack = usePlayerStore((state) => state.currentTrack);
+  const isPlaying = usePlayerStore((state) => state.isPlaying);
+  const playing = useSharedValue(false);
 
   const id = trackId ?? currentTrack?.id;
   const uri = trackUri ?? currentTrack?.uri;
@@ -75,13 +77,33 @@ export function ProgressBar({
   const showBars = showWaveform && peaks != null && peaks.length > 0 && layoutWidth > 0;
 
   useEffect(() => {
-    // The engine ticks every 250 ms; gliding each tick keeps the line moving.
-    positionValue.value = withTiming(position, { duration: 260, easing: Easing.linear });
-  }, [position, positionValue]);
-
-  useEffect(() => {
     durationValue.value = duration;
   }, [duration, durationValue]);
+
+  useEffect(() => {
+    playing.value = isPlaying;
+  }, [isPlaying, playing]);
+
+  useEffect(() => {
+    if (dragging.value) return;
+    // Paused, the engine's position is the truth; while playing it reports every
+    // 250 ms, so correct only when the two have genuinely diverged (a seek, a
+    // track change, a resume) and let the frame callback carry the rest.
+    if (!isPlaying || Math.abs(positionValue.value - position) > 0.5) {
+      positionValue.value = position;
+    }
+  }, [position, isPlaying, positionValue, dragging]);
+
+  // Advance once per displayed frame instead of restarting a tween on every
+  // status tick. No step at 60 Hz, no lag at 120 Hz, and nothing on the JS
+  // thread while the screen is idle.
+  useFrameCallback((frame) => {
+    if (!playing.value || dragging.value) return;
+    const delta = (frame.timeSincePreviousFrame ?? 0) / 1000;
+    if (!(delta > 0) || delta > 0.5) return;
+    const next = positionValue.value + delta;
+    positionValue.value = durationValue.value > 0 ? Math.min(durationValue.value, next) : next;
+  });
 
   const updateDrag = (x: number) => {
     'worklet';
