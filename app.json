@@ -41,6 +41,12 @@
       "expo-image",
       "expo-font",
       [
+        "ffmpeg-expo",
+        {
+          "includeX86": true
+        }
+      ],
+      [
         "expo-audio",
         {
           "enableBackgroundPlayback": true

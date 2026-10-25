@@ -619,7 +619,7 @@ function PlayerProgress({
 
   return (
     <View style={styles.progress}>
-      <ProgressBar position={position} duration={duration} onSeek={seek} color={palette.accent} simultaneousHandlers={simultaneousHandlers} />
+      <ProgressBar position={position} duration={duration} onSeek={seek} color={palette.accent} simultaneousHandlers={simultaneousHandlers} showWaveform height={6} />
       <View style={styles.times}>
         <Text style={styles.time}>{formatDuration(position)}</Text>
         <Text style={styles.time}>-{formatDuration(Math.max(0, duration - position))}</Text>

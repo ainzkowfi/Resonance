@@ -1,5 +1,5 @@
-import { useEffect } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Image, StyleSheet, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   Easing,
@@ -9,6 +9,8 @@ import Animated, {
 } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
 
+import { generateWaveform, getWaveform } from '../ffmpeg/waveform';
+import { usePlayerStore } from '../store/player';
 import { motion, palette } from '../theme';
 
 export interface ProgressBarProps {
@@ -23,6 +25,12 @@ export interface ProgressBarProps {
   /** Vertical alignment of the line inside the touch area. */
   align?: 'center' | 'top';
   simultaneousHandlers?: ReturnType<typeof Gesture.Pan> | ReturnType<typeof Gesture.Pan>[];
+  /** Track ID for waveform visualization */
+  trackId?: string;
+  /** Track URI for waveform generation */
+  trackUri?: string;
+  /** Show waveform */
+  showWaveform?: boolean;
 }
 
 /**
@@ -40,6 +48,9 @@ export function ProgressBar({
   height = 4,
   align = 'center',
   simultaneousHandlers,
+  trackId,
+  trackUri,
+  showWaveform = false,
 }: ProgressBarProps) {
   const width = useSharedValue(0);
   const positionValue = useSharedValue(0);
@@ -47,6 +58,25 @@ export function ProgressBar({
   const dragging = useSharedValue(false);
   const dragAmount = useSharedValue(0);
   const dragValue = useSharedValue(0);
+  const [waveformUri, setWaveformUri] = useState<string | null>(null);
+  const currentTrack = usePlayerStore((state) => state.currentTrack);
+
+  const id = trackId ?? currentTrack?.id;
+  const uri = trackUri ?? currentTrack?.uri;
+
+  useEffect(() => {
+    if (showWaveform && id && uri) {
+      getWaveform(id).then((existingUri) => {
+        if (existingUri) {
+          setWaveformUri(existingUri);
+        } else {
+          generateWaveform(uri, id).then((generatedUri) => {
+            if (generatedUri) setWaveformUri(generatedUri);
+          });
+        }
+      });
+    }
+  }, [id, uri, showWaveform]);
 
   useEffect(() => {
     // The engine ticks every 250 ms; gliding each tick keeps the line moving.
@@ -140,7 +170,14 @@ export function ProgressBar({
           width.value = event.nativeEvent.layout.width;
         }}
       >
-        <View style={[styles.track, { height, borderRadius: height / 2, backgroundColor: trackColor }]}>
+        <View style={[styles.track, { height, borderRadius: height / 2, backgroundColor: trackColor, overflow: 'hidden' }]}>
+          {showWaveform && waveformUri ? (
+            <Image
+              source={{ uri: waveformUri }}
+              style={[styles.waveform, { height }]}
+              resizeMode="stretch"
+            />
+          ) : null}
           <Animated.View
             style={[styles.fill, { height, borderRadius: height / 2, backgroundColor: color }, ratio]}
           >
@@ -162,6 +199,13 @@ const styles = StyleSheet.create({
   },
   track: {
     width: '100%',
+  },
+  waveform: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    width: '100%',
+    opacity: 0.3,
   },
   fill: {
     position: 'absolute',
