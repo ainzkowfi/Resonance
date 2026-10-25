@@ -21,6 +21,8 @@ export interface HandoffTiming {
   /** Seconds reported by the first status where audio was moving. */
   currentTime: number;
   crossfade: boolean;
+  /** True when a preloaded player was promoted instead of a new one created. */
+  preloaded: boolean;
 }
 
 export interface HandoffSample {
@@ -30,6 +32,7 @@ export interface HandoffSample {
   totalMs: number;
   /** Blends are measured too, but excluded from the hard-cut summary. */
   crossfade: boolean;
+  preloaded: boolean;
 }
 
 /** A transition slower than this is a stall, not a handoff: discard it. */
@@ -52,6 +55,7 @@ export function sampleFromTiming(timing: HandoffTiming): HandoffSample | undefin
     startLatencyMs,
     totalMs: Math.round(queueDelayMs) + startLatencyMs,
     crossfade: timing.crossfade,
+    preloaded: timing.preloaded,
   };
 }
 
@@ -64,19 +68,37 @@ export function median(values: readonly number[]): number {
     : Math.round((usable[middle - 1] + usable[middle]) / 2);
 }
 
+export interface HandoffGroup {
+  count: number;
+  medianMs: number;
+}
+
 export interface HandoffSummary {
   count: number;
   medianMs: number;
   worstMs: number;
+  /** Transitions where the next player was already open. */
+  preloaded: HandoffGroup | null;
+  /** Transitions that created a player at the boundary. */
+  cold: HandoffGroup | null;
+}
+
+function group(totals: readonly number[]): HandoffGroup | null {
+  if (totals.length === 0) return null;
+  return { count: totals.length, medianMs: median(totals) };
 }
 
 /** Summary of hard-cut transitions only; `null` until one has been measured. */
 export function summarizeHandoffs(samples: readonly HandoffSample[]): HandoffSummary | null {
-  const hardCuts = samples.filter((sample) => !sample.crossfade).map((sample) => sample.totalMs);
+  const hardCuts = samples.filter((sample) => !sample.crossfade);
   if (hardCuts.length === 0) return null;
+
+  const all = hardCuts.map((sample) => sample.totalMs);
   return {
-    count: hardCuts.length,
-    medianMs: median(hardCuts),
-    worstMs: Math.max(...hardCuts),
+    count: all.length,
+    medianMs: median(all),
+    worstMs: Math.max(...all),
+    preloaded: group(hardCuts.filter((s) => s.preloaded).map((s) => s.totalMs)),
+    cold: group(hardCuts.filter((s) => !s.preloaded).map((s) => s.totalMs)),
   };
 }

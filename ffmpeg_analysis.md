@@ -165,12 +165,15 @@ filter is involved.
   the outgoing player cannot advance the queue a second time.
 - Crossfade applies to queue advance and the next button; `previous`, picking a
   track directly, and repeat-one stay hard cuts.
-- **Gapless:** not achievable with one `AudioPlayer` per source — encoder
-  delay/padding cannot be trimmed across two players, and there is no playlist
-  API. The remaining option is preloading the next source and calling
-  `player.replace()` just before the end, which shrinks the gap but does not
-  remove it. **Measure a baseline first**; silence skipping already removes the
-  audible trailing silence that people usually mean by "the gap".
+- **Gapless — preload shipped, true gapless not achievable.** One `AudioPlayer`
+  per source cannot trim encoder delay/padding across a boundary and there is no
+  playlist API, so zero-gap remains out of reach. What shipped instead: 15 s
+  before a track ends, the successor is opened into a hidden player at volume 0
+  (`prepare()`), and the boundary promotes it (`promote()`) so the handoff is a
+  `play()` on an already-open source. `player.replace()` is used to retarget
+  that hidden player when the queue changes, not on the active player —
+  replacing the active source would force a load exactly at the boundary.
+  Silence skipping still removes the trailing silence baked into files.
 - **Handoff measurement (shipped):** the engine times every track change. The
   clock starts before the old player is torn down, stops at the first status
   where audio is actually moving, and subtracts the position the player already
@@ -180,10 +183,11 @@ filter is involved.
   excluded from the summary, and transitions slower than 5 s are discarded as
   stalls. Results appear in Settings → Diagnostics as a median plus sample count,
   and in the shared error log.
-- **Decision rule:** if the hard-cut median is under ~100 ms, preloading is not
-  worth building. If `start latency` dominates, `replace()` on a preloaded
-  player is the lever; if `queue delay` dominates the store is the problem, not
-  the player.
+- **Proof rather than assertion:** every sample records whether it was
+  preloaded or cold, and Diagnostics reports the two medians side by side
+  (“35 ms preloaded · 420 ms cold”). If they are the same, the native player is
+  loading lazily on `play()` and preloading bought nothing — delete it rather
+  than keep the extra player around.
 
 ### P4 — Clip / ringtone export (~medium, gated)
 

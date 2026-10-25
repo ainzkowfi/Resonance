@@ -49,8 +49,12 @@ class AudioEngine {
   private listener: StatusListener | null = null;
   private handoffListener: ((timing: HandoffTiming) => void) | null = null;
   /** In-flight transition timing, cleared once the first audible status lands. */
-  private handoff: { requestedAt: number; playRequestedAt: number; crossfade: boolean } | null =
-    null;
+  private handoff: {
+    requestedAt: number;
+    playRequestedAt: number;
+    crossfade: boolean;
+    preloaded: boolean;
+  } | null = null;
   private loadedId: string | null = null;
   private configured = false;
   /** Monotonic token: an in-flight load that is superseded bails out. */
@@ -68,6 +72,9 @@ class AudioEngine {
   /** Player being faded out; removed when the ramp finishes. */
   private outgoing: AudioPlayer | null = null;
   private fadeTimer: ReturnType<typeof setInterval> | null = null;
+  /** Hidden player holding the track that comes next, already opened. */
+  private standby: AudioPlayer | null = null;
+  private standbyId: string | null = null;
 
   setStatusListener(listener: StatusListener | null): void {
     this.listener = listener;
@@ -115,6 +122,16 @@ class AudioEngine {
       return;
     }
 
+    // A preloaded player turns the handoff into a play() on a source that is
+    // already open, instead of a create-and-load at the boundary.
+    const standby = this.standbyId === track.id ? this.standby : null;
+    if (standby) {
+      this.standby = null;
+      this.standbyId = null;
+      this.promote(track, standby, options);
+      return;
+    }
+
     // Start the clock before teardown: releasing the old player is part of the
     // silence the listener hears between tracks.
     const requestedAt = Date.now();
@@ -122,7 +139,7 @@ class AudioEngine {
     const token = ++this.loadToken;
     this.loadedId = track.id;
     this.handledFinish = false;
-    this.handoff = { requestedAt, playRequestedAt: 0, crossfade: false };
+    this.handoff = { requestedAt, playRequestedAt: 0, crossfade: false, preloaded: false };
     let player: AudioPlayer | null = null;
 
     try {
@@ -170,6 +187,100 @@ class AudioEngine {
   }
 
   /**
+   * Opens a track in a hidden player so the next handoff is just a `play()`.
+   *
+   * Reuses the hidden player when the target changes, so queuing a different
+   * next track costs a source swap rather than a new player.
+   */
+  prepare(track: Track): void {
+    if (!track.uri) {
+      this.releaseStandby();
+      return;
+    }
+    if (this.standbyId === track.id && this.standby) return;
+
+    if (this.standby) {
+      try {
+        this.standby.replace({ uri: track.uri });
+        this.standby.volume = 0;
+        this.standbyId = track.id;
+        return;
+      } catch {
+        this.releaseStandby();
+      }
+    }
+
+    try {
+      const player = createAudioPlayer({ uri: track.uri }, { updateInterval: 250 });
+      player.volume = 0;
+      this.standby = player;
+      this.standbyId = track.id;
+    } catch (error) {
+      console.warn('[audio] failed to preload track', error);
+    }
+  }
+
+  /** Drops the preloaded player, if any. */
+  releaseStandby(): void {
+    const player = this.standby;
+    this.standby = null;
+    this.standbyId = null;
+    if (!player) return;
+    try {
+      player.pause();
+      player.remove();
+    } catch {
+      // Already gone.
+    }
+  }
+
+  /**
+   * Swaps in a player that was opened ahead of time.
+   *
+   * Everything that made the old player unique is retired here, but the new one
+   * is not created or loaded — that already happened.
+   */
+  private promote(
+    track: Track,
+    player: AudioPlayer,
+    options: { autoplay?: boolean; startAt?: number },
+  ): void {
+    const requestedAt = Date.now();
+    this.loadToken++;
+    this.releaseOutgoing();
+    this.subscription?.remove();
+    this.subscription = null;
+
+    const previous = this.player;
+    this.player = player;
+    this.loadedId = track.id;
+    this.handledFinish = false;
+    this.isLoaded = false;
+    this.isBuffering = false;
+    this.pendingSeek = options.startAt && options.startAt > 0 ? options.startAt : null;
+    this.fadeGain = 1;
+    this.handoff = { requestedAt, playRequestedAt: 0, crossfade: false, preloaded: true };
+    this.applyGain();
+
+    this.bindStatus(player);
+    this.updateLockScreenMetadata(track);
+
+    if (previous) {
+      try {
+        previous.pause();
+        previous.remove();
+      } catch {
+        // Already gone.
+      }
+    }
+
+    if (options.autoplay) {
+      this.markPlayRequested();
+      player.play();
+    }
+  }
+
+  /**
    * Promotes `track` and blends it over the track that is playing.
    *
    * Falls back to a hard `load` when nothing is playing — fading out silence is
@@ -205,11 +316,25 @@ class AudioEngine {
 
     this.subscription?.remove();
     this.subscription = null;
-    this.handoff = { requestedAt: Date.now(), playRequestedAt: 0, crossfade: true };
+
+    // Blend from the preloaded player when it is the right track.
+    const standby = this.standbyId === track.id ? this.standby : null;
+    if (standby) {
+      this.standby = null;
+      this.standbyId = null;
+    } else {
+      this.releaseStandby();
+    }
+    this.handoff = {
+      requestedAt: Date.now(),
+      playRequestedAt: 0,
+      crossfade: true,
+      preloaded: standby != null,
+    };
 
     let incoming: AudioPlayer | null = null;
     try {
-      incoming = createAudioPlayer({ uri: track.uri }, { updateInterval: 250 });
+      incoming = standby ?? createAudioPlayer({ uri: track.uri }, { updateInterval: 250 });
       if (token !== this.loadToken) {
         incoming.remove();
         return;
@@ -298,6 +423,7 @@ class AudioEngine {
           firstAudibleAt: Date.now(),
           currentTime: status.currentTime,
           crossfade: handoff.crossfade,
+          preloaded: handoff.preloaded,
         });
       }
       if (status.didJustFinish && !this.handledFinish) {
@@ -422,6 +548,7 @@ class AudioEngine {
     this.loadToken++;
     this.handoff = null;
     this.releaseOutgoing();
+    this.releaseStandby();
     this.subscription?.remove();
     this.subscription = null;
     this.isLoaded = false;

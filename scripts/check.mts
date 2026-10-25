@@ -18,6 +18,7 @@ import {
 import { planAnalysisQueue } from '../src/lib/analysisQueue.ts';
 import { crossfadeStart, normalizeCrossfade } from '../src/lib/crossfade.ts';
 import { median, sampleFromTiming, summarizeHandoffs } from '../src/lib/handoff.ts';
+import { PRELOAD_LEAD_SECONDS, shouldPreload } from '../src/lib/preload.ts';
 import { buildCapabilities, condenseListing, formatReport, listNames } from '../src/lib/ffmpegReport.ts';
 import { targetFromSamples, trackGainDb, volumeForGain } from '../src/lib/leveling.ts';
 import { leadSkip, tailOut } from '../src/lib/silence.ts';
@@ -748,6 +749,7 @@ const measured = sampleFromTiming({
   firstAudibleAt: 1260,
   currentTime: 0.22,
   crossfade: false,
+  preloaded: false,
 });
 ok(measured?.queueDelayMs === 10, 'queue delay is the time to reach play()');
 ok(measured?.startLatencyMs === 30, 'the reported position is subtracted from the latency');
@@ -811,6 +813,45 @@ ok(
     { ...hardCut, totalMs: 400 },
   ])?.worstMs === 400,
   'the worst case is reported',
+);
+
+// -------------------------------------------------------------- preloading
+
+ok(PRELOAD_LEAD_SECONDS === 15, 'the preload window is 15 s');
+ok(shouldPreload({ duration: 200, currentTime: 186, prepared: false }), 'inside the window preloads');
+ok(!shouldPreload({ duration: 200, currentTime: 180, prepared: false }), 'outside the window waits');
+ok(!shouldPreload({ duration: 200, currentTime: 186, prepared: true }), 'a prepared track is not prepared twice');
+ok(!shouldPreload({ duration: 0, currentTime: 0, prepared: false }), 'an unknown duration never preloads');
+ok(!shouldPreload({ duration: 200, currentTime: 200, prepared: false }), 'a finished track does not preload');
+ok(!shouldPreload({ duration: 200, currentTime: 260, prepared: false }), 'a position past the end does not preload');
+ok(!shouldPreload({ duration: Number.NaN, currentTime: 10, prepared: false }), 'a broken duration never preloads');
+ok(!shouldPreload({ duration: 200, currentTime: Number.NaN, prepared: false }), 'a broken position never preloads');
+ok(shouldPreload({ duration: 6, currentTime: 0, prepared: false }), 'a short track preloads immediately');
+
+// Preloaded and cold transitions are reported separately; the sample maths is
+// identical apart from the flag.
+const preloadedSample = sampleFromTiming({
+  requestedAt: 1000,
+  playRequestedAt: 1001,
+  firstAudibleAt: 1060,
+  currentTime: 0.05,
+  crossfade: false,
+  preloaded: true,
+});
+ok(preloadedSample?.preloaded === true, 'the sample records that the player was preloaded');
+ok(preloadedSample?.totalMs === 10, 'a preloaded handoff is measured the same way');
+const coldSample = { ...preloadedSample!, preloaded: false };
+ok(
+  summarizeHandoffs([preloadedSample!, coldSample])?.preloaded?.count === 1,
+  'preloaded transitions are grouped',
+);
+ok(summarizeHandoffs([preloadedSample!, coldSample])?.cold?.count === 1, 'cold transitions are grouped');
+ok(
+  summarizeHandoffs([
+    preloadedSample!,
+    { ...coldSample, totalMs: coldSample.totalMs + 400 },
+  ])?.cold?.medianMs === coldSample.totalMs + 400,
+  'each group carries its own median',
 );
 
 console.log(`ok - ${checks} checks passed`);

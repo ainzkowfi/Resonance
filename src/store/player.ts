@@ -7,6 +7,7 @@ import { crossfadeStart, normalizeCrossfade } from '../lib/crossfade';
 import { shuffleArray } from '../lib/format';
 import { sampleFromTiming } from '../lib/handoff';
 import { targetFromSamples, trackGainDb, volumeForGain } from '../lib/leveling';
+import { shouldPreload } from '../lib/preload';
 import { leadSkip, tailOut } from '../lib/silence';
 import { useDiagnosticsStore } from './diagnostics';
 import type { RepeatMode, Track } from '../types/track';
@@ -370,6 +371,26 @@ export const usePlayerStore = create<PlayerState>()(
           state.next();
           return;
         }
+
+        // Open the next track shortly before the boundary so the handoff is a
+        // play() on something already loaded.
+        const currentId = state.currentTrack?.id;
+        if (
+          currentId &&
+          state.repeat !== 'one' &&
+          state.queue.length > 0 &&
+          shouldPreload({
+            duration: state.duration,
+            currentTime: status.currentTime,
+            prepared: preparedFor === currentId,
+          })
+        ) {
+          const upcoming = state.queue[(state.queueIndex + 1) % state.queue.length];
+          if (upcoming && upcoming.id !== currentId) {
+            preparedFor = currentId;
+            audioEngine.prepare(upcoming);
+          }
+        }
         if (status.playing) {
           // Advance early enough to blend into the next track, or at the start
           // of the outro when silence skipping is on. Whichever comes first.
@@ -453,12 +474,16 @@ function levelGainFor(track: Track, levels: Record<string, number>): number {
   return volumeForGain(gainDb);
 }
 
+/** The track whose successor has already been opened, if any. */
+let preparedFor: string | null = null;
+
 /** Load through one place so a failed native load can never surface as an unhandled rejection. */
 function loadTrack(
   track: Track,
   options: { autoplay?: boolean; startAt?: number; crossfade?: boolean } = {},
 ): void {
   const { crossfade = false, autoplay, startAt } = options;
+  preparedFor = null;
   const state = usePlayerStore.getState();
   const seconds = crossfade ? state.crossfade : 0;
   const gain = levelGainFor(track, state.levels);

@@ -80,8 +80,21 @@ export default function SettingsScreen() {
     };
   }, []);
 
+  const handoffValue = handoffSummary
+    ? handoffSummary.preloaded && handoffSummary.cold
+      ? `${handoffSummary.preloaded.medianMs} ms preloaded · ${handoffSummary.cold.medianMs} ms cold`
+      : `${handoffSummary.medianMs} ms · ${handoffSummary.count} measured`
+    : 'Not measured';
   const handoffText = handoffSummary
-    ? `${handoffSummary.medianMs} ms median, ${handoffSummary.worstMs} ms worst, ${handoffSummary.count} samples`
+    ? [
+        `${handoffSummary.medianMs} ms median, ${handoffSummary.worstMs} ms worst, ${handoffSummary.count} samples`,
+        handoffSummary.preloaded
+          ? `preloaded: ${handoffSummary.preloaded.medianMs} ms over ${handoffSummary.preloaded.count}`
+          : 'preloaded: none',
+        handoffSummary.cold
+          ? `cold: ${handoffSummary.cold.medianMs} ms over ${handoffSummary.cold.count}`
+          : 'cold: none',
+      ].join(' · ')
     : 'not measured';
   const diagnostics = `Resonance diagnostics\nFFmpeg: ${ffmpeg}\nTrack handoff: ${handoffText}\n${Platform.OS} ${String(
     Platform.Version,
@@ -245,19 +258,11 @@ export default function SettingsScreen() {
               onPress={() => void Share.share({ message: probe.report })}
             />
           ) : null}
-          <InfoRow
-            icon="timer-outline"
-            label="Track handoff"
-            value={
-              handoffSummary
-                ? `${handoffSummary.medianMs} ms · ${handoffSummary.count} measured`
-                : 'Not measured'
-            }
-          />
+          <InfoRow icon="timer-outline" label="Track handoff" value={handoffValue} />
           <Text style={styles.note}>
-            Pipeline gap: from the previous track finishing to audio starting on the next, crossfades
-            excluded. Trailing silence inside the file is on top of this. Play a few transitions with
-            crossfade off — anything under ~100 ms is not worth preloading for.
+            Pipeline gap from the previous track finishing to the next one starting, crossfades
+            excluded. “Preloaded” means the next player was already open; “cold” means it was
+            created at the boundary. Trailing silence inside the file is on top of both.
           </Text>
           {handoffs.length > 0 ? (
             <Row
