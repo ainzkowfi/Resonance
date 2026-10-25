@@ -2,7 +2,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
 import { createJSONStorage, persist, type PersistStorage } from 'zustand/middleware';
 import { audioEngine } from '../audio/engine';
+import { loadAnalysis, type TrackAnalysis } from '../ffmpeg/waveform';
 import { shuffleArray } from '../lib/format';
+import { targetFromSamples, trackGainDb, volumeForGain } from '../lib/leveling';
 import type { RepeatMode, Track } from '../types/track';
 
 /**
@@ -28,6 +30,10 @@ export interface PlayerState {
   originalQueue: Track[];
   /** Persisted checkpoint written on pause / track change / unmount. */
   resumePosition: number;
+  /** Volume leveling: turns loud tracks down to the library's median loudness. */
+  leveling: boolean;
+  /** Measured loudness (dBFS) per track id, persisted so leveling is instant. */
+  levels: Record<string, number>;
 
   playTracks: (tracks: Track[], startIndex?: number) => void;
   toggle: () => void;
@@ -41,6 +47,8 @@ export interface PlayerState {
   removeAt: (index: number) => void;
   moveInQueue: (from: number, to: number) => void;
   clearQueue: () => void;
+  setLeveling: (enabled: boolean) => void;
+  recordLevel: (trackId: string, rmsDb: number) => void;
   applyStatus: (status: {
     currentTime: number;
     duration: number;
@@ -61,7 +69,12 @@ interface PersistedPlayerState {
   repeat: RepeatMode;
   originalQueue: Track[];
   isPlaying: boolean;
+  leveling: boolean;
+  levels: Record<string, number>;
 }
+
+/** Median loudness only needs a representative sample, not every track ever. */
+const MAX_LEVEL_SAMPLES = 2000;
 
 /** Skip disk writes when the serialized snapshot is unchanged. */
 function createDedupedStorage<S>(): PersistStorage<S> {
@@ -99,6 +112,8 @@ export const usePlayerStore = create<PlayerState>()(
       repeat: 'all',
       originalQueue: [],
       resumePosition: 0,
+      leveling: false,
+      levels: {},
 
       playTracks: (tracks, startIndex = 0) => {
         if (tracks.length === 0) return;
@@ -303,6 +318,24 @@ export const usePlayerStore = create<PlayerState>()(
         audioEngine.unload();
       },
 
+      setLeveling: (enabled) => {
+        set({ leveling: enabled });
+        const { currentTrack } = get();
+        if (currentTrack) void applyLeveling(currentTrack);
+        else audioEngine.setVolume(1);
+      },
+
+      recordLevel: (trackId, rmsDb) => {
+        if (!Number.isFinite(rmsDb)) return;
+        set((state) => {
+          if (state.levels[trackId] === rmsDb) return state;
+          const levels = { ...state.levels, [trackId]: rmsDb };
+          const keys = Object.keys(levels);
+          if (keys.length > MAX_LEVEL_SAMPLES) delete levels[keys[0]];
+          return { levels };
+        });
+      },
+
       applyStatus: (status) => {
         const state = get();
         if (status.didJustFinish) {
@@ -359,6 +392,8 @@ export const usePlayerStore = create<PlayerState>()(
         repeat: state.repeat,
         originalQueue: state.originalQueue,
         isPlaying: false,
+        leveling: state.leveling,
+        levels: state.levels,
       }),
     },
   ),
@@ -366,11 +401,51 @@ export const usePlayerStore = create<PlayerState>()(
 
 /** Load through one place so a failed native load can never surface as an unhandled rejection. */
 function loadTrack(track: Track, options?: { autoplay?: boolean; startAt?: number }): void {
-  void audioEngine.load(track, options).catch(() => {
-    if (usePlayerStore.getState().currentTrack?.id === track.id) {
-      usePlayerStore.setState({ isPlaying: false });
-    }
-  });
+  void audioEngine
+    .load(track, options)
+    // Leveling is cosmetic: never let it surface as a failed load.
+    .then(() => applyLeveling(track).catch(() => undefined))
+    .catch(() => {
+      if (usePlayerStore.getState().currentTrack?.id === track.id) {
+        usePlayerStore.setState({ isPlaying: false });
+      }
+    });
+}
+
+/** Guards against a slow analysis landing after the track changed again. */
+let levelingToken = 0;
+
+/**
+ * Applies the leveling gain to the loaded player.
+ *
+ * Runs after the source is loaded, so a first-time decode never delays
+ * playback. `player.volume` caps at 1, so the target is the library's median
+ * loudness: louder tracks come down to it, quieter ones are left alone.
+ */
+async function applyLeveling(track: Track): Promise<void> {
+  const token = ++levelingToken;
+  const state = usePlayerStore.getState();
+
+  if (!state.leveling || !track.uri) {
+    audioEngine.setVolume(1);
+    return;
+  }
+
+  let analysis: TrackAnalysis | undefined;
+  try {
+    analysis = await loadAnalysis(track.id, track.uri);
+  } catch {
+    analysis = undefined;
+  }
+  if (token !== levelingToken) return;
+
+  if (analysis && Number.isFinite(analysis.rmsDb)) {
+    state.recordLevel(track.id, analysis.rmsDb);
+  }
+
+  const targetDb = targetFromSamples(Object.values(usePlayerStore.getState().levels));
+  const gainDb = trackGainDb({ rmsDb: analysis?.rmsDb, tagGainDb: track.gain, targetDb });
+  audioEngine.setVolume(volumeForGain(gainDb));
 }
 
 let didRestore = false;

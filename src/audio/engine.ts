@@ -172,6 +172,16 @@ class AudioEngine {
     }
   }
 
+  /** 0..1 output volume, used by volume leveling. */
+  setVolume(volume: number): void {
+    if (!this.player || !Number.isFinite(volume)) return;
+    try {
+      this.player.volume = Math.min(1, Math.max(0, volume));
+    } catch {
+      // The player may already have been released.
+    }
+  }
+
   play(): void {
     this.applyPlayState(true);
   }

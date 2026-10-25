@@ -18,6 +18,7 @@ import { Touch } from '../../components/Touch';
 import { runCapabilityProbe } from '../../ffmpeg/probe';
 import { getFFmpegInfo } from '../../ffmpeg/waveform';
 import { formatDuration } from '../../lib/format';
+import { targetFromSamples } from '../../lib/leveling';
 import { formatIssues, formatTime, useDiagnosticsStore } from '../../store/diagnostics';
 import { useLibraryStore } from '../../store/library';
 import { usePlayerStore } from '../../store/player';
@@ -36,6 +37,11 @@ export default function SettingsScreen() {
   const issues = useDiagnosticsStore((state) => state.issues);
   const clearIssues = useDiagnosticsStore((state) => state.clearIssues);
   const probe = useDiagnosticsStore((state) => state.probe);
+  const leveling = usePlayerStore((state) => state.leveling);
+  const setLeveling = usePlayerStore((state) => state.setLeveling);
+  const levels = usePlayerStore((state) => state.levels);
+  const measured = Object.keys(levels).length;
+  const targetDb = useMemo(() => targetFromSamples(Object.values(levels)), [levels]);
   const [probing, setProbing] = useState(false);
   const [ffmpeg, setFfmpeg] = useState('Checking…');
 
@@ -93,6 +99,26 @@ export default function SettingsScreen() {
             onPress={() => router.push('/hidden')}
           />
           <InfoRow icon="list" label="Tracks in queue" value={String(queueLength)} />
+        </Section>
+
+        <Section title="Playback">
+          <Row
+            icon="volume-medium-outline"
+            label="Volume leveling"
+            hint={
+              leveling
+                ? `${measured} track${measured === 1 ? '' : 's'} measured · playing at ${targetDb.toFixed(0)} dB`
+                : 'Turn loud tracks down so the next one does not jump'
+            }
+            value={leveling}
+            onPress={() => void setLeveling(!leveling)}
+          />
+          {leveling ? (
+            <Text style={styles.note}>
+              Only turns tracks down. Quiet masters are not boosted, because the player cannot exceed
+              full volume.
+            </Text>
+          ) : null}
         </Section>
 
         <Section title="Diagnostics">
@@ -378,6 +404,17 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 16,
     color: palette.textDim,
+  },
+  note: {
+    ...font.label,
+    fontWeight: '500',
+    color: palette.textFaint,
+    lineHeight: 17,
+    paddingHorizontal: 14,
+    paddingBottom: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: palette.border,
+    paddingTop: 10,
   },
   capRow: {
     flexDirection: 'row',

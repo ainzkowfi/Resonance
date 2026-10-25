@@ -3,12 +3,12 @@ import { Directory, File, Paths } from 'expo-file-system';
 import { Platform } from 'react-native';
 
 import { stableId } from '../lib/format';
-import { peaksFromWav } from '../lib/wav';
+import { analyzeWav } from '../lib/wav';
 import { describeError, useDiagnosticsStore } from '../store/diagnostics';
 import { ffmpegLoadFailure, loadFFmpeg, type FFmpegModule } from './module';
 
 /**
- * Waveform peaks, computed on device.
+ * Per-track audio analysis, computed on device.
  *
  * The first version of this asked FFmpeg for a `showwavespic` PNG. Two things
  * were wrong with that: `ffmpeg-expo` ships an LGPL build whose filter set does
@@ -17,17 +17,26 @@ import { ffmpegLoadFailure, loadFFmpeg, type FFmpegModule } from './module';
  * was missing from the installed build.
  *
  * So we now decode the track to a tiny mono WAV (`-ac 1 -ar 8000`) and derive
- * the peaks in JS. PCM/WAV are supported on both platforms, the peaks give us
- * exact data to draw with SVG, and every native call is behind a lazy import so
- * a build without the module degrades to "no waveform" instead of a crash.
+ * everything in JS. PCM/WAV are supported on both platforms, and one decode
+ * yields all of it: waveform peaks, integrated loudness for leveling, and the
+ * near-silence at each end. Every native call stays behind a lazy import, so a
+ * build without the module degrades to "no analysis" instead of a crash.
  */
 
-export interface Waveform {
+export interface TrackAnalysis {
   /** Normalised 0..1 peak per column. */
   peaks: number[];
+  /** dBFS RMS over non-silent frames; the leveling input. */
+  rmsDb: number;
+  /** dBFS sample peak. */
+  peakDb: number;
+  /** Seconds of near-silence at the start. */
+  lead: number;
+  /** Seconds of near-silence at the end. */
+  tail: number;
 }
 
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 const BARS = 96;
 const SAMPLE_RATE = 8_000;
 /** Only the first 15 minutes are analysed: 14 MB of PCM, enough for any song. */
@@ -39,7 +48,7 @@ const TEMP_DIR = 'waveform-tmp';
 
 /** Set for one session after a crash marker is found, so we never loop. */
 let disabledForSession = false;
-const inflight = new Map<string, Promise<Waveform | undefined>>();
+const inflight = new Map<string, Promise<TrackAnalysis | undefined>>();
 
 function record(message: string, detail?: string) {
   useDiagnosticsStore.getState().addIssue('waveform', message, detail);
@@ -172,7 +181,7 @@ async function decodeToWav(module: FFmpegModule, sourcePath: string, wavPath: st
   }
 }
 
-async function generate(trackId: string, trackUri: string): Promise<Waveform | undefined> {
+async function generate(trackId: string, trackUri: string): Promise<TrackAnalysis | undefined> {
   if (disabledForSession || Platform.OS === 'web') return undefined;
 
   const module = await loadFFmpeg();
@@ -191,21 +200,20 @@ async function generate(trackId: string, trackUri: string): Promise<Waveform | u
     if (!decoded) return undefined;
 
     const bytes = await wavFile.bytes();
-    const peaks = peaksFromWav(bytes, BARS);
-    if (!peaks) {
+    const analysis = analyzeWav(bytes, { barCount: BARS, sampleRate: SAMPLE_RATE });
+    if (!analysis) {
       record('FFmpeg produced no audio samples for this track. The file may be DRM-protected.');
       return undefined;
     }
 
-    const waveform: Waveform = { peaks };
     try {
-      await cacheFile(trackId).write(JSON.stringify({ v: CACHE_VERSION, peaks }));
+      await cacheFile(trackId).write(JSON.stringify({ v: CACHE_VERSION, ...analysis }));
     } catch {
       // A cache miss only costs a re-decode.
     }
-    return waveform;
+    return analysis;
   } catch (error) {
-    recordError('Waveform generation failed.', error);
+    recordError('Audio analysis failed.', error);
     return undefined;
   } finally {
     try {
@@ -221,27 +229,47 @@ async function generate(trackId: string, trackUri: string): Promise<Waveform | u
   }
 }
 
-export async function getWaveform(trackId: string): Promise<Waveform | undefined> {
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+/** Cached analysis for a track, or undefined when it was never analysed. */
+export async function getAnalysis(trackId: string): Promise<TrackAnalysis | undefined> {
   try {
     const file = cacheFile(trackId);
     if (!file.exists) return undefined;
-    const parsed = JSON.parse(await file.text()) as { v?: number; peaks?: unknown };
+    const parsed = JSON.parse(await file.text()) as {
+      v?: number;
+      peaks?: unknown;
+      rmsDb?: unknown;
+      peakDb?: unknown;
+      lead?: unknown;
+      tail?: unknown;
+    };
+    // Version 1 caches held peaks only; they are re-decoded on first use so
+    // leveling has loudness data to work with.
     if (parsed.v !== CACHE_VERSION || !Array.isArray(parsed.peaks)) return undefined;
-    const peaks = parsed.peaks.filter(
-      (value): value is number => typeof value === 'number' && Number.isFinite(value),
-    );
-    return peaks.length > 0 ? { peaks } : undefined;
+    const peaks = parsed.peaks.filter(isFiniteNumber);
+    if (peaks.length === 0 || !isFiniteNumber(parsed.rmsDb)) return undefined;
+
+    return {
+      peaks,
+      rmsDb: parsed.rmsDb,
+      peakDb: isFiniteNumber(parsed.peakDb) ? parsed.peakDb : 0,
+      lead: isFiniteNumber(parsed.lead) ? parsed.lead : 0,
+      tail: isFiniteNumber(parsed.tail) ? parsed.tail : 0,
+    };
   } catch {
     return undefined;
   }
 }
 
-/** Cached peaks if present, otherwise decode once (concurrent calls share a run). */
-export async function loadWaveform(
+/** Cached analysis if present, otherwise decode once (concurrent calls share a run). */
+export async function loadAnalysis(
   trackId: string,
   trackUri: string,
-): Promise<Waveform | undefined> {
-  const cached = await getWaveform(trackId);
+): Promise<TrackAnalysis | undefined> {
+  const cached = await getAnalysis(trackId);
   if (cached) return cached;
 
   const pending = inflight.get(trackId);

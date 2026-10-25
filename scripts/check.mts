@@ -16,7 +16,8 @@ import {
   sniffFormat,
 } from '../src/lib/tags.ts';
 import { buildCapabilities, condenseListing, formatReport, listNames } from '../src/lib/ffmpegReport.ts';
-import { peaksFromWav } from '../src/lib/wav.ts';
+import { targetFromSamples, trackGainDb, volumeForGain } from '../src/lib/leveling.ts';
+import { analyzeWav, peaksFromWav } from '../src/lib/wav.ts';
 
 let checks = 0;
 function ok(condition: boolean, message: string) {
@@ -602,5 +603,53 @@ const report = formatReport({
 ok(report.includes('6.1.1'), 'the report carries the version');
 ok(report.includes('[yes] AAC encoder'), 'supported capabilities are marked');
 ok(!report.includes('vflip'), 'the shared report stays filtered');
+
+// --------------------------------------------------- loudness and silence
+
+const analysis = analyzeWav(makeWav(tone), { barCount: 96, sampleRate: 8000 });
+ok(analysis !== undefined, 'a tone produces an analysis');
+ok(analysis?.peaks.length === 96, 'the analysis carries the peaks');
+ok((analysis?.rmsDb ?? 0) > -2 && (analysis?.rmsDb ?? 0) < -0.2, 'a full-scale tone measures near 0 dBFS');
+ok((analysis?.peakDb ?? -99) < 0, 'sample peak stays below full scale');
+ok(Math.abs((analysis?.lead ?? 0) - 1) < 0.05, `leading silence is about 1 s, got ${analysis?.lead}`);
+ok((analysis?.tail ?? 1) < 0.05, 'no trailing silence is reported');
+ok(
+  JSON.stringify(analysis?.peaks) === JSON.stringify(peaksFromWav(makeWav(tone), 96)),
+  'peaksFromWav and analyzeWav agree',
+);
+
+const toneFirst = new Int16Array(half * 2);
+for (let i = 0; i < half; i++) toneFirst[i] = Math.sin((2 * Math.PI * 440 * i) / 8000) > 0 ? 30000 : -30000;
+const tailAnalysis = analyzeWav(makeWav(toneFirst), { barCount: 96, sampleRate: 8000 });
+ok((tailAnalysis?.lead ?? 1) < 0.05, 'no leading silence is reported when audio starts immediately');
+ok(Math.abs((tailAnalysis?.tail ?? 0) - 1) < 0.05, `trailing silence is about 1 s, got ${tailAnalysis?.tail}`);
+
+ok(analyzeWav(new Uint8Array(44)) === undefined, 'an empty WAV yields no analysis');
+ok(analyzeWav(makeWav(tone), { barCount: 0 }) === undefined, 'a zero bar count is rejected');
+
+// ------------------------------------------------------------- leveling maths
+
+ok(targetFromSamples([]) === -16, 'the fallback target is used with no samples');
+ok(targetFromSamples([-10, -12, -14]) === -16, 'too few samples fall back to the default');
+ok(targetFromSamples([-10, -12, -14, -16, -18, -20]) === -15, 'an even sample count uses the middle pair');
+ok(targetFromSamples([-9, -11, -13, -15, -17]) === -13, 'an odd sample count uses the middle value');
+ok(targetFromSamples([-10, 5, Number.NaN, -20, -30, -40, -50]) === -30, 'invalid samples are ignored');
+
+ok(trackGainDb({ rmsDb: -10, targetDb: -16 }) === -6, 'a loud track is attenuated to the target');
+ok(trackGainDb({ rmsDb: -22, targetDb: -16 }) === 0, 'a quiet track is never boosted');
+ok(trackGainDb({ rmsDb: 0, targetDb: -20 }) === -18, 'attenuation is capped');
+ok(trackGainDb({ tagGainDb: -3.5, targetDb: -16 }) === -3.5, 'a ReplayGain tag is used when unanalysed');
+ok(trackGainDb({ tagGainDb: 4, targetDb: -16 }) === 0, 'a positive tag gain is discarded');
+ok(trackGainDb({ targetDb: -16 }) === 0, 'an unknown track is left at unity');
+ok(
+  trackGainDb({ rmsDb: Number.NaN, tagGainDb: -2, targetDb: -16 }) === -2,
+  'a non-finite measurement falls back to the tag',
+);
+
+ok(volumeForGain(0) === 1, 'unity gain is full volume');
+ok(Math.abs(volumeForGain(-6) - 0.5012) < 0.001, 'a 6 dB cut halves the volume');
+ok(volumeForGain(-18) < 0.13, 'an 18 dB cut is quiet but audible');
+ok(volumeForGain(6) === 1, 'volume never exceeds full scale');
+ok(volumeForGain(Number.NaN) === 1, 'a broken gain leaves the volume alone');
 
 console.log(`ok - ${checks} checks passed`);

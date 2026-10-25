@@ -62,7 +62,7 @@ change shape and stay, one is deferred, and two were false positives**.
 
 ## 4. What ships next
 
-### P0 — Capability probe (do first, ~1 small change)
+### P0 — Capability probe (shipped in `a087bb8`)
 
 The first waveform attempt failed because the plan trusted a README. Make the
 device answer instead.
@@ -75,7 +75,7 @@ device answer instead.
 - **Why first:** it converts every binary-gate question in this document from an
   assumption into a fact, for the actual build on the actual device.
 
-### P1 — Loudness leveling, attenuation only (~medium)
+### P1 — Loudness leveling, attenuation only (shipped)
 
 **Design constraint found during re-evaluation:** `player.volume` is 0–1, so
 gain can only go *down*. Track leveling therefore means "bring loud tracks down
@@ -87,16 +87,25 @@ Sound Check, and the honest thing to document in the UI.
   stays 1 and the fields are additive).
 - Measurement: reuse the decoded PCM. Frame the samples at ~50 ms, drop frames
   below −50 dBFS, take the RMS of what remains, keep the true peak.
-- Target: the library's 95th-percentile RMS (falls back to a fixed −16 dBFS
-  until enough tracks are analysed). `gainDb = target − measured`, clamped to
-  `[−18, 0]`, then `volume = 10^(gainDb/20)`.
+- Target: the **median** measured RMS (falls back to a fixed −16 dBFS below
+  five samples). A median is used rather than a 95th percentile because with
+  attenuation only, pulling the loudest tenth down to itself leaves every other
+  jump untouched; the median halves the spread instead.
+  `gainDb = target − measured`, clamped to `[−18, 0]`, then
+  `volume = 10^(gainDb/20)`.
 - Apply in `audioEngine.load()` next to the existing `bindStatus` call, so it
   survives track changes and does not fight user seeking.
 - Tagged files can use `Track.gain` immediately, before analysis catches up.
 - Toggle in Settings ("Volume leveling"), default off; the per-track dB value
   already shown in `track/[id]` stays truthful.
-- **Acceptance:** on a playlist mixing a −8 dBFS master with a −16 dBFS master,
-  the perceived jump at track changes disappears, and no track clips.
+- **Verified offline:** six synthetic masters from −8 to −18 dBFS measure
+  exactly (0.000 dB error), gains are all ≤ 0, volumes stay inside 0–1, and the
+  library spread shrinks from 10 dB to 5 dB. Real music will not be that exact:
+  the measure is RMS, not LUFS, so bass-heavy masters are trimmed slightly more
+  than a true R128 meter would ask for.
+- **Acceptance on device:** on a playlist mixing a −8 dBFS master with a
+  −16 dBFS master, the jump at the track change is halved rather than removed,
+  and no track clips.
 
 ### P2 — Skip leading/trailing silence (~small)
 
@@ -179,8 +188,9 @@ analysis record added in P1 is what P2 and P3 read.
 
 ## 8. Decisions needed
 
-1. **Leveling target** — library-relative (adaptive, best result, needs P3 data)
-   or a fixed dBFS target (works from the first track, simpler)?
+1. **Leveling target** — *settled during implementation:* adaptive median with a
+   −16 dBFS fallback, so it works from the first track and improves as P3 adds
+   measurements.
 2. **Silence skipping** — separate toggle, or implied by "leveling" being on?
 3. **Clip export** — is ringtone/clip creation actually wanted, or is P4 dead
    weight for a player that is otherwise read-only?

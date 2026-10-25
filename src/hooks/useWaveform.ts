@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-import { loadWaveform } from '../ffmpeg/waveform';
+import { loadAnalysis } from '../ffmpeg/waveform';
 
 /**
  * Peaks for a track: cached file if present, otherwise decoded once.
@@ -16,8 +16,8 @@ export function useWaveform(trackId?: string, trackUri?: string): number[] | nul
 
     let cancelled = false;
 
-    void loadWaveform(trackId, trackUri).then((waveform) => {
-      if (!cancelled && waveform) setResult({ id: trackId, peaks: waveform.peaks });
+    void loadAnalysis(trackId, trackUri).then((analysis) => {
+      if (!cancelled && analysis) setResult({ id: trackId, peaks: analysis.peaks });
     });
 
     return () => {
