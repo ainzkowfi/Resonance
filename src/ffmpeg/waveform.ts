@@ -6,6 +6,7 @@ import { stableId } from '../lib/format';
 import { analyzeWav } from '../lib/wav';
 import { describeError, useDiagnosticsStore } from '../store/diagnostics';
 import { ffmpegLoadFailure, loadFFmpeg, type FFmpegModule } from './module';
+import { toPath } from './paths';
 
 /**
  * Per-track audio analysis, computed on device.
@@ -105,16 +106,6 @@ function keyOf(trackId: string): string {
 
 function cacheFile(trackId: string): File {
   return new File(directory(WAVEFORM_DIR), `${keyOf(trackId)}.json`);
-}
-
-/** FFmpeg wants a plain filesystem path, not a `file://` URI. */
-function toPath(uri: string): string {
-  const withoutScheme = uri.startsWith('file://') ? uri.slice('file://'.length) : uri;
-  try {
-    return decodeURIComponent(withoutScheme);
-  } catch {
-    return withoutScheme;
-  }
 }
 
 function extensionOf(uri: string): string {

@@ -23,6 +23,7 @@ import { crossfadeStart, normalizeCrossfade } from '../src/lib/crossfade.ts';
 import { median, sampleFromTiming, summarizeHandoffs } from '../src/lib/handoff.ts';
 import { PRELOAD_LEAD_SECONDS, shouldPreload } from '../src/lib/preload.ts';
 import { buildCapabilities, condenseListing, formatReport, listNames } from '../src/lib/ffmpegReport.ts';
+import { evaluateExportCheck, selfTestWav } from '../src/lib/encodeCheck.ts';
 import { targetFromSamples, trackGainDb, volumeForGain } from '../src/lib/leveling.ts';
 import { leadSkip, tailOut } from '../src/lib/silence.ts';
 import { columnsForWidth, resamplePeaks } from '../src/lib/waveform.ts';
@@ -713,6 +714,35 @@ const report = formatReport({
 ok(report.includes('6.1.1'), 'the report carries the version');
 ok(report.includes('[yes] AAC encoder'), 'supported capabilities are marked');
 ok(!report.includes('vflip'), 'the shared report stays filtered');
+
+// ---------------------------------------------------------- export self-test
+
+const wav = selfTestWav();
+ok(wav.length === 44 + 16_000, `a second of 8 kHz mono is 16044 bytes, got ${wav.length}`);
+ok(sniffFormat(wav) === 'wav', 'the self-test input is recognised as a WAV');
+ok(wav.some((byte) => byte !== 0), 'the test signal is not silence');
+ok(parseDuration(wav, 'wav', wav.length) === 1, 'the test signal declares one second of audio');
+
+const passed = evaluateExportCheck({ returnCode: 0, bytes: 16_384, ms: 320 });
+ok(passed.ok, 'a successful encode passes');
+ok(passed.message.includes('16.0 KB'), 'a pass reports how much was written');
+ok(passed.message.includes('320 ms'), 'a pass reports how long it took');
+
+const crashed = evaluateExportCheck({ returnCode: 1, bytes: 0, ms: 20 });
+ok(!crashed.ok, 'a non-zero exit fails the test');
+ok(crashed.message.includes('code 1'), 'the failure names the exit code');
+ok(!evaluateExportCheck({ returnCode: 0, bytes: 0, ms: 10 }).ok, 'success with no file still fails');
+ok(!evaluateExportCheck({ returnCode: 0, bytes: 400, ms: 10 }).ok, 'an implausibly small file fails');
+
+const withSelfTest = formatReport({
+  version: '6.1.1',
+  device: 'android 34',
+  capabilities: full,
+  selfTest: passed,
+  listings: { filters: '', encoders: '', muxers: '', decoders: '' },
+});
+ok(withSelfTest.includes('export round trip: passed'), 'the report states the round trip result');
+ok(!report.includes('export round trip'), 'a report without a run leaves the line out');
 
 // --------------------------------------------------- loudness and silence
 

@@ -138,10 +138,17 @@ export function condenseListing(output: string, maxLines = 80): string[] {
   return lines.slice(0, maxLines);
 }
 
+export interface SelfTestLine {
+  ok: boolean;
+  message: string;
+}
+
 export function formatReport(input: {
   version: string;
   device: string;
   capabilities: Capability[];
+  /** Result of the real encode, when one was run. */
+  selfTest?: SelfTestLine;
   listings: Listings;
 }): string {
   const parts = [
@@ -151,6 +158,13 @@ export function formatReport(input: {
     '',
     ...input.capabilities.map((item) => `[${item.ok ? 'yes' : 'no '}] ${item.label}`),
   ];
+
+  if (input.selfTest) {
+    parts.push(
+      '',
+      `export round trip: ${input.selfTest.ok ? 'passed' : 'failed'} — ${input.selfTest.message}`,
+    );
+  }
 
   for (const [name, output] of Object.entries(input.listings)) {
     const lines = condenseListing(output);

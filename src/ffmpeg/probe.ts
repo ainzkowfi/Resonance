@@ -3,6 +3,7 @@ import { Platform } from 'react-native';
 import { buildCapabilities, formatReport } from '../lib/ffmpegReport';
 import { describeError, useDiagnosticsStore, type ProbeReport } from '../store/diagnostics';
 import { loadFFmpeg, type FFmpegModule } from './module';
+import { runExportSelfTest } from './selfTest';
 
 /**
  * Asks the installed binary what it can actually do.
@@ -11,6 +12,10 @@ import { loadFFmpeg, type FFmpegModule } from './module';
  * component list, which is the only trustworthy answer: the packaged build is
  * an LGPL subset, and assuming otherwise is what broke the first waveform
  * attempt. Results are cached in the diagnostics store for the session.
+ *
+ * A listing is still only a claim about the binary. The probe therefore also
+ * runs one real encode — a second of PCM to AAC in MP4 — because a component
+ * being compiled in does not mean a job will finish.
  */
 
 export type { ProbeReport };
@@ -70,10 +75,14 @@ export async function runCapabilityProbe(): Promise<ProbeReport | undefined> {
       decoders: listings.decoders ?? '',
     });
 
+    // The part a listing cannot answer: does a whole job finish?
+    const selfTest = await runExportSelfTest(module);
+
     const report = formatReport({
       version,
       device: `${Platform.OS} ${String(Platform.Version)}`,
       capabilities,
+      selfTest,
       listings: {
         filters: listings.filters ?? '',
         encoders: listings.encoders ?? '',
@@ -82,7 +91,7 @@ export async function runCapabilityProbe(): Promise<ProbeReport | undefined> {
       },
     });
 
-    const result: ProbeReport = { at: Date.now(), version, capabilities, report };
+    const result: ProbeReport = { at: Date.now(), version, capabilities, selfTest, report };
     useDiagnosticsStore.getState().setProbe(result);
     return result;
   } catch (error) {

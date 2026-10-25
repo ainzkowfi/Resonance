@@ -104,7 +104,7 @@ export default function SettingsScreen() {
     ? 'Asking the binary on this device…'
     : probe
       ? `Checked ${formatTime(probe.at)}`
-      : 'Lists the filters and encoders this build really has';
+      : 'Lists what this build has, then encodes a test clip';
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
@@ -233,6 +233,19 @@ export default function SettingsScreen() {
           />
           {probe ? (
             <View style={styles.logBlock}>
+              <View style={styles.capRow}>
+                <Ionicons
+                  name={probe.selfTest.ok ? 'checkmark-circle' : 'close-circle'}
+                  size={15}
+                  color={probe.selfTest.ok ? palette.accentAlt : palette.textFaint}
+                />
+                <View style={styles.capText}>
+                  <Text style={styles.capLabel}>AAC / M4A export round trip</Text>
+                  <Text style={styles.capNote} numberOfLines={2}>
+                    {probe.selfTest.message}
+                  </Text>
+                </View>
+              </View>
               {probe.capabilities.map((capability) => (
                 <View key={capability.label} style={styles.capRow}>
                   <Ionicons

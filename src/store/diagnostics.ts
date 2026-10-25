@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import { create } from 'zustand';
 
+import type { ExportCheckResult } from '../lib/encodeCheck';
 import type { Capability } from '../lib/ffmpegReport';
 import type { HandoffSample } from '../lib/handoff';
 
@@ -34,6 +35,8 @@ export interface ProbeReport {
   at: number;
   version: string;
   capabilities: Capability[];
+  /** A real encode, not just a component listing. */
+  selfTest: ExportCheckResult & { detail?: string };
   /** Compact, shareable text. */
   report: string;
 }
