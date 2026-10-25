@@ -401,8 +401,6 @@ class AudioEngine {
         {
           showSeekForward: true,
           showSeekBackward: true,
-          seekForwardIntervalSeconds: 30,
-          seekBackwardIntervalSeconds: 15,
           isLiveStream: false,
         },
       );
