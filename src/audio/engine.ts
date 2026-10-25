@@ -4,6 +4,7 @@ import {
   setAudioModeAsync,
   type AudioPlayer,
 } from 'expo-audio';
+import type { HandoffTiming } from '../lib/handoff';
 import type { Track } from '../types/track';
 
 /**
@@ -46,6 +47,10 @@ class AudioEngine {
   private player: AudioPlayer | null = null;
   private subscription: { remove: () => void } | null = null;
   private listener: StatusListener | null = null;
+  private handoffListener: ((timing: HandoffTiming) => void) | null = null;
+  /** In-flight transition timing, cleared once the first audible status lands. */
+  private handoff: { requestedAt: number; playRequestedAt: number; crossfade: boolean } | null =
+    null;
   private loadedId: string | null = null;
   private configured = false;
   /** Monotonic token: an in-flight load that is superseded bails out. */
@@ -66,6 +71,11 @@ class AudioEngine {
 
   setStatusListener(listener: StatusListener | null): void {
     this.listener = listener;
+  }
+
+  /** Reports how long a track change took to become audible. */
+  setHandoffListener(listener: ((timing: HandoffTiming) => void) | null): void {
+    this.handoffListener = listener;
   }
 
   async configure(): Promise<void> {
@@ -105,10 +115,14 @@ class AudioEngine {
       return;
     }
 
+    // Start the clock before teardown: releasing the old player is part of the
+    // silence the listener hears between tracks.
+    const requestedAt = Date.now();
     this.unload();
     const token = ++this.loadToken;
     this.loadedId = track.id;
     this.handledFinish = false;
+    this.handoff = { requestedAt, playRequestedAt: 0, crossfade: false };
     let player: AudioPlayer | null = null;
 
     try {
@@ -130,7 +144,10 @@ class AudioEngine {
 
       this.updateLockScreenMetadata(track);
 
-      if (options.autoplay) player.play();
+      if (options.autoplay) {
+        this.markPlayRequested();
+        player.play();
+      }
     } catch (error) {
       if (player) {
         try {
@@ -188,6 +205,7 @@ class AudioEngine {
 
     this.subscription?.remove();
     this.subscription = null;
+    this.handoff = { requestedAt: Date.now(), playRequestedAt: 0, crossfade: true };
 
     let incoming: AudioPlayer | null = null;
     try {
@@ -210,7 +228,10 @@ class AudioEngine {
 
       this.bindStatus(incoming);
       this.updateLockScreenMetadata(track);
-      if (options.autoplay !== false) incoming.play();
+      if (options.autoplay !== false) {
+        this.markPlayRequested();
+        incoming.play();
+      }
 
       this.startFade(outgoing, outgoingStart, seconds);
     } catch (error) {
@@ -268,6 +289,17 @@ class AudioEngine {
       // A released player can still emit a queued event; ignoring it is what
       // keeps a crossfade from advancing the queue twice.
       if (this.player !== player) return;
+      if (this.handoff && status.playing && status.currentTime > 0) {
+        const handoff = this.handoff;
+        this.handoff = null;
+        this.handoffListener?.({
+          requestedAt: handoff.requestedAt,
+          playRequestedAt: handoff.playRequestedAt,
+          firstAudibleAt: Date.now(),
+          currentTime: status.currentTime,
+          crossfade: handoff.crossfade,
+        });
+      }
       if (status.didJustFinish && !this.handledFinish) {
         this.handledFinish = true;
       }
@@ -382,8 +414,13 @@ class AudioEngine {
     this.play();
   }
 
+  private markPlayRequested(): void {
+    if (this.handoff) this.handoff.playRequestedAt = Date.now();
+  }
+
   unload(): void {
     this.loadToken++;
+    this.handoff = null;
     this.releaseOutgoing();
     this.subscription?.remove();
     this.subscription = null;

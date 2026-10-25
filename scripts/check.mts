@@ -17,6 +17,7 @@ import {
 } from '../src/lib/tags.ts';
 import { planAnalysisQueue } from '../src/lib/analysisQueue.ts';
 import { crossfadeStart, normalizeCrossfade } from '../src/lib/crossfade.ts';
+import { median, sampleFromTiming, summarizeHandoffs } from '../src/lib/handoff.ts';
 import { buildCapabilities, condenseListing, formatReport, listNames } from '../src/lib/ffmpegReport.ts';
 import { targetFromSamples, trackGainDb, volumeForGain } from '../src/lib/leveling.ts';
 import { leadSkip, tailOut } from '../src/lib/silence.ts';
@@ -738,5 +739,78 @@ ok(crossfadeStart(Number.NaN, 4) === 0, 'an unknown duration never triggers an a
 ok(crossfadeStart(8, 4) === 0, 'a track barely twice the blend is left alone');
 ok(crossfadeStart(9, 4) === 5, 'a track just long enough still blends');
 ok(crossfadeStart(4, 12) === 0, 'a blend longer than the track is ignored');
+
+// ------------------------------------------------------------- handoff timing
+
+const measured = sampleFromTiming({
+  requestedAt: 1000,
+  playRequestedAt: 1010,
+  firstAudibleAt: 1260,
+  currentTime: 0.22,
+  crossfade: false,
+});
+ok(measured?.queueDelayMs === 10, 'queue delay is the time to reach play()');
+ok(measured?.startLatencyMs === 30, 'the reported position is subtracted from the latency');
+ok(measured?.totalMs === 40, 'total handoff is queue delay plus start latency');
+
+ok(
+  sampleFromTiming({
+    requestedAt: 1000,
+    playRequestedAt: 0,
+    firstAudibleAt: 1260,
+    currentTime: 0.22,
+    crossfade: false,
+  })?.queueDelayMs === 0,
+  'a missing play timestamp falls back to the request time',
+);
+ok(
+  sampleFromTiming({
+    requestedAt: 1000,
+    playRequestedAt: 1010,
+    firstAudibleAt: 9000,
+    currentTime: 0.5,
+    crossfade: false,
+  }) === undefined,
+  'a stalled transition is discarded',
+);
+ok(
+  sampleFromTiming({
+    requestedAt: 1000,
+    playRequestedAt: 1010,
+    firstAudibleAt: 1100,
+    currentTime: 5,
+    crossfade: false,
+  })?.startLatencyMs === 0,
+  'a position ahead of the clock never produces negative latency',
+);
+ok(
+  sampleFromTiming({
+    requestedAt: 1000,
+    playRequestedAt: 1010,
+    firstAudibleAt: 1010,
+    currentTime: 0,
+    crossfade: false,
+  }) === undefined,
+  'a transition with no elapsed time is discarded',
+);
+
+ok(median([5, 1, 3]) === 3, 'median of an odd count');
+ok(median([40, 10, 30, 20]) === 25, 'median of an even count averages the middle pair');
+ok(median([]) === 0, 'median of nothing is zero');
+
+const hardCut = { at: 1, queueDelayMs: 40, startLatencyMs: 120, totalMs: 160, crossfade: false };
+const blend = { at: 2, queueDelayMs: 30, startLatencyMs: 10, totalMs: 40, crossfade: true };
+ok(summarizeHandoffs([]) === null, 'no samples means no summary');
+ok(summarizeHandoffs([blend]) === null, 'crossfades are excluded from the hard-cut summary');
+ok(summarizeHandoffs([hardCut, blend])?.medianMs === 160, 'hard cuts are summarised');
+ok(summarizeHandoffs([hardCut, blend])?.count === 1, 'only hard cuts are counted');
+ok(
+  summarizeHandoffs([
+    hardCut,
+    { ...hardCut, totalMs: 240 },
+    { ...hardCut, totalMs: 400 },
+  ])?.worstMs === 400,
+  'the worst case is reported',
+);
 
 console.log(`ok - ${checks} checks passed`);

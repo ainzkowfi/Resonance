@@ -2,6 +2,7 @@ import { Platform } from 'react-native';
 import { create } from 'zustand';
 
 import type { Capability } from '../lib/ffmpegReport';
+import type { HandoffSample } from '../lib/handoff';
 
 /**
  * In-memory crash / failure log.
@@ -38,16 +39,21 @@ export interface ProbeReport {
 }
 
 const MAX_ISSUES = 12;
+const MAX_HANDOFFS = 20;
 
 interface DiagnosticsState {
   issues: DiagnosticIssue[];
   fatal: FatalError | null;
   probe: ProbeReport | null;
+  /** Measured track-change timings, newest first. */
+  handoffs: HandoffSample[];
   addIssue: (scope: string, message: string, detail?: string) => void;
   clearIssues: () => void;
   setFatal: (error: unknown, componentStack?: string) => void;
   clearFatal: () => void;
   setProbe: (probe: ProbeReport) => void;
+  recordHandoff: (sample: HandoffSample) => void;
+  clearHandoffs: () => void;
 }
 
 let seq = 0;
@@ -56,6 +62,7 @@ export const useDiagnosticsStore = create<DiagnosticsState>((set) => ({
   issues: [],
   fatal: null,
   probe: null,
+  handoffs: [],
   addIssue: (scope, message, detail) =>
     set((state) => ({
       issues: [
@@ -67,6 +74,9 @@ export const useDiagnosticsStore = create<DiagnosticsState>((set) => ({
   setFatal: (error, componentStack) => set({ fatal: describeError(error, componentStack) }),
   clearFatal: () => set({ fatal: null }),
   setProbe: (probe) => set({ probe }),
+  recordHandoff: (sample) =>
+    set((state) => ({ handoffs: [sample, ...state.handoffs].slice(0, MAX_HANDOFFS) })),
+  clearHandoffs: () => set({ handoffs: [] }),
 }));
 
 export function describeError(error: unknown, componentStack?: string): FatalError {

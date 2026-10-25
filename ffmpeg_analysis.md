@@ -171,6 +171,19 @@ filter is involved.
   `player.replace()` just before the end, which shrinks the gap but does not
   remove it. **Measure a baseline first**; silence skipping already removes the
   audible trailing silence that people usually mean by "the gap".
+- **Handoff measurement (shipped):** the engine times every track change. The
+  clock starts before the old player is torn down, stops at the first status
+  where audio is actually moving, and subtracts the position the player already
+  reached — so the player's 250 ms status interval does not limit the accuracy.
+  Two components are recorded: queue delay (teardown + player creation) and
+  start latency (decoder start). Crossfaded transitions are measured but
+  excluded from the summary, and transitions slower than 5 s are discarded as
+  stalls. Results appear in Settings → Diagnostics as a median plus sample count,
+  and in the shared error log.
+- **Decision rule:** if the hard-cut median is under ~100 ms, preloading is not
+  worth building. If `start latency` dominates, `replace()` on a preloaded
+  player is the lever; if `queue delay` dominates the store is the problem, not
+  the player.
 
 ### P4 — Clip / ringtone export (~medium, gated)
 

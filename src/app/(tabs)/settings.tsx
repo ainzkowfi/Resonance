@@ -19,6 +19,7 @@ import { runCapabilityProbe } from '../../ffmpeg/probe';
 import { getFFmpegInfo } from '../../ffmpeg/waveform';
 import { MAX_CROSSFADE_SECONDS } from '../../lib/crossfade';
 import { formatDuration } from '../../lib/format';
+import { summarizeHandoffs } from '../../lib/handoff';
 import { targetFromSamples } from '../../lib/leveling';
 import { MAX_TRACKS_PER_RUN } from '../../lib/analysisQueue';
 import { useAnalysisRunStore } from '../../store/analysis';
@@ -40,6 +41,9 @@ export default function SettingsScreen() {
   const issues = useDiagnosticsStore((state) => state.issues);
   const clearIssues = useDiagnosticsStore((state) => state.clearIssues);
   const probe = useDiagnosticsStore((state) => state.probe);
+  const handoffs = useDiagnosticsStore((state) => state.handoffs);
+  const clearHandoffs = useDiagnosticsStore((state) => state.clearHandoffs);
+  const handoffSummary = useMemo(() => summarizeHandoffs(handoffs), [handoffs]);
   const leveling = usePlayerStore((state) => state.leveling);
   const setLeveling = usePlayerStore((state) => state.setLeveling);
   const skipSilence = usePlayerStore((state) => state.skipSilence);
@@ -76,7 +80,10 @@ export default function SettingsScreen() {
     };
   }, []);
 
-  const diagnostics = `Resonance diagnostics\nFFmpeg: ${ffmpeg}\n${Platform.OS} ${String(
+  const handoffText = handoffSummary
+    ? `${handoffSummary.medianMs} ms median, ${handoffSummary.worstMs} ms worst, ${handoffSummary.count} samples`
+    : 'not measured';
+  const diagnostics = `Resonance diagnostics\nFFmpeg: ${ffmpeg}\nTrack handoff: ${handoffText}\n${Platform.OS} ${String(
     Platform.Version,
   )}\n\n${formatIssues(issues)}`;
 
@@ -236,6 +243,28 @@ export default function SettingsScreen() {
               label="Share capability report"
               hint={`FFmpeg ${probe.version}`}
               onPress={() => void Share.share({ message: probe.report })}
+            />
+          ) : null}
+          <InfoRow
+            icon="timer-outline"
+            label="Track handoff"
+            value={
+              handoffSummary
+                ? `${handoffSummary.medianMs} ms · ${handoffSummary.count} measured`
+                : 'Not measured'
+            }
+          />
+          <Text style={styles.note}>
+            Pipeline gap: from the previous track finishing to audio starting on the next, crossfades
+            excluded. Trailing silence inside the file is on top of this. Play a few transitions with
+            crossfade off — anything under ~100 ms is not worth preloading for.
+          </Text>
+          {handoffs.length > 0 ? (
+            <Row
+              icon="trash-outline"
+              label="Clear handoff samples"
+              hint={`${handoffs.length} recorded`}
+              onPress={clearHandoffs}
             />
           ) : null}
           <View style={styles.logBlock}>

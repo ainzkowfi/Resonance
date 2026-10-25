@@ -5,8 +5,10 @@ import { audioEngine } from '../audio/engine';
 import { loadAnalysis, type TrackAnalysis } from '../ffmpeg/waveform';
 import { crossfadeStart, normalizeCrossfade } from '../lib/crossfade';
 import { shuffleArray } from '../lib/format';
+import { sampleFromTiming } from '../lib/handoff';
 import { targetFromSamples, trackGainDb, volumeForGain } from '../lib/leveling';
 import { leadSkip, tailOut } from '../lib/silence';
+import { useDiagnosticsStore } from './diagnostics';
 import type { RepeatMode, Track } from '../types/track';
 
 /**
@@ -559,3 +561,9 @@ if (usePlayerStore.persist.hasHydrated()) restorePersistedPlayback();
 
 // The engine reports progress here; the engine itself never imports the store.
 audioEngine.setStatusListener((status) => usePlayerStore.getState().applyStatus(status));
+
+// Track-change timings feed the handoff measurement in Diagnostics.
+audioEngine.setHandoffListener((timing) => {
+  const sample = sampleFromTiming(timing);
+  if (sample) useDiagnosticsStore.getState().recordHandoff(sample);
+});
