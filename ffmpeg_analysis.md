@@ -1,132 +1,188 @@
-# FFmpeg Integration Analysis for Resonance
+# FFmpeg feature plan (re-evaluated)
 
-## Current State Assessment
+Last updated 2026‑10‑25, after the waveform pipeline shipped in `13bc27c`.
+This supersedes the first pass in this file, which rated several features highly
+that the bundled FFmpeg build cannot do at all.
 
-Resonance is a local-first music player using:
-- **Audio playback**: `expo-audio` (native playback engine)
-- **File access**: SAF (Storage Access Framework) on Android, MediaStore as fallback
-- **Metadata parsing**: Custom tag parsers in `src/lib/tags.ts` reading raw bytes (ID3, FLAC, OGG, MP4/M4A, etc.)
-- **Already has**: `gain` field in Track type, parsed from ReplayGain tags, displayed in track details but **not applied during playback**
+---
 
-The app is well-architected but has several gaps that FFmpeg could potentially address.
+## 1. What changed since the first analysis
 
-## FFmpeg Capabilities vs App Needs
+| Fact | Evidence | Consequence |
+| --- | --- | --- |
+| The binary is an **LGPL build with a documented component list**, not a general-purpose FFmpeg | `node_modules/ffmpeg-expo/README.md` → "Default Codec Support" | Every feature must be checked against that list before it is planned |
+| Filters included: `scale`, `trim`, `volume`, `fps`, `format`, `concat` (Android also `overlay`, `drawtext`) | same README | No `loudnorm`, `silenceremove`, `silencedetect`, `showwavespic`, `atempo`, `acrossfade`, `aformat`, `ebur128` |
+| Encoders: AAC, MPEG‑4, PCM, MP4/MOV, Matroska/WebM, WAV/OGG; Android also GIF/PNG/MJPEG | same README | No MP3, FLAC, Opus, Vorbis or H.264/HEVC encoding → export is effectively AAC/M4A or WAV |
+| Decoders are broad (MP3, AAC, FLAC, ALAC, Vorbis, Opus, WMA-ish AC3, PCM, MP4/MOV/MKV/OGG/WAV) | same README | Reading any library file for analysis is safe |
+| The native module throws at **import** time when missing | `ffmpeg-expo/build/ExpoFFmpeg.js` (`requireNativeModule('ExpoFFmpeg')`) | Must stay behind the lazy, guarded import — this is what was force-closing the app |
+| Android library files are SAF `content://` URIs | `src/library/local.ts` (`Directory.pickDirectoryAsync`) | Every job needs a copy into cache first; a 10 MB track costs a copy per analysis |
+| A PCM decode path already exists and is cached per track | `src/ffmpeg/waveform.ts` (`-ac 1 -ar 8000 -t 900 -f wav`) | **Analysis is the cheap part.** Any measurement that is "just math over samples" no longer needs FFmpeg filters |
+| `expo-audio` exposes `player.volume` (0–1) and `player.playbackRate` / `shouldCorrectPitch` | `node_modules/expo-audio/build/AudioModule.types.d.ts:94,122,126` | Volume leveling and speed control are native features; FFmpeg is the wrong tool for both |
+| ReplayGain is already parsed but never applied | `src/lib/tags.ts:117,420,578` → `Track.gain`; `src/audio/engine.ts` never reads it | Leveling can start today for tagged files, with zero new dependencies |
 
-### High-Value, Practical Features
+---
 
-| Feature | Use Case | Feasibility | Notes |
-|---------|----------|-------------|-------|
-| **ReplayGain/Loudness Normalization** | Normalize volume across tracks from different sources (EBU R128 `loudnorm` filter) | ★★★★☆ High | Track already has `gain` field parsed but unused. Biggest UX improvement. Better to pre-process and cache normalized versions. |
-| **Waveform Generation** | Visual waveform in progress bar/UI for better seeking | ★★★★☆ High | FFmpeg can generate waveform data/images. Pre-generate once per track, cache as JSON/PNG. Much better UX than simple progress bar. |
-| **Audio Trimming** | Let users trim intros/outros, create clips/ringtones | ★★★★☆ High | User-initiated on specific tracks, not bulk. Easy with FFmpeg `atrim`/`trim`. Good for a "local music player" feature set. |
-| **Silence Trimming** | Auto-remove leading/trailing silence | ★★★★☆ High | Uses `silenceremove` filter. Nice quality-of-life feature. |
-| **Format Conversion/Transcoding** | Handle files that don't play well in expo-audio, or standardize formats | ★★★★☆ High | Copy to cache dir as compatible format (AAC in MP4 container) if needed. |
-| **Crossfading Preparation** | Pre-generate crossfaded transitions between tracks | ★★★☆☆ Medium-High | Nice for seamless playback, but complex to manage. Could generate on-demand or cache. |
+## 2. Evaluation gates
 
-### Medium/Questionable Value
+A feature only survives if it clears all four:
 
-| Feature | Use Case | Feasibility | Notes |
-|---------|----------|-------------|-------|
-| **Playback Speed/Pitch Control** | Speed up/down without pitch change (`atempo`, `rubberband`) | ★★★☆☆ Medium | expo-audio may have limited support; FFmpeg filtering during playback is complex for low latency. Better as pre-processing or if expo-audio can't do it well. |
-| **Audio Effects (EQ, reverb)** | Equalizer, audio processing | ★★☆☆☆ Low-Medium | Real-time EQ with FFmpeg has latency issues. expo-audio might be better suited, or use native audio processing. |
-| **Metadata Extraction Fallback** | More robust parsing for unusual formats | ★★★★☆ High | App already has good parsers, but FFmpeg could be fallback for exotic formats. Probably not necessary given current implementation. |
+1. **Binary gate** — the filter/codec it needs is in the documented list above.
+2. **Need gate** — the app cannot already do it with data it has (tags, file bytes, native player APIs).
+3. **Cost gate** — the work per track is bounded (≈ one decode plus small I/O), cancellable, and does not run in the background unasked.
+4. **Exit gate** — the result has somewhere to go: playback state, the UI, or a file the user chose to write.
 
-### False Positives (Not Practical/Not Recommended)
+Anything that only clears the binary gate is "possible but pointless"; anything
+that fails the binary gate is a false positive and is listed as dropped.
 
-| Feature | Why It's Not Practical | Recommendation |
-|---------|------------------------|---------------|
-| **Real-time stem separation/vocal removal** | Extremely CPU intensive, requires ML models (multi-GB), would take minutes per song on mobile, drains battery badly | **Skip** - Not feasible on mobile devices |
-| **Batch normalization of entire library** | Processing hundreds/thousands of tracks would take hours, fill storage, drain battery | **Skip** as batch operation - Only do on-demand per track or with user consent |
-| **Real-time audio effects during playback** | FFmpeg is not designed for low-latency real-time streaming. Would introduce lag, poor UX. Use native audio APIs instead. | **Skip** - Use expo-audio's capabilities or native modules |
-| **AI upscaling/enhancement** | Requires large models, impractical on mobile | **Skip** |
-| **Video processing** | App is a music player, not relevant to core functionality | **Skip** |
+---
 
-## Technical Considerations for Integration
+## 3. Re-evaluated matrix
 
-### Challenges
+Verdicts: **Ship** (next), **Later** (after the shipped path is validated), **Drop**, **No FFmpeg needed**.
 
-1. **Package Maturity** - `ffmpeg-expo` by kingjnr4 is marked as "not stable for production use yet". This is a significant risk.
-2. **Binary Size** - FFmpeg binaries add significant app size (several MB per architecture). Need to consider download size.
-3. **Limited Codec Support** - Default LGPL build has no libmp3lame, no libx264/libx265, no libopus in some configs. As stated in README: "MP3, FLAC, H.265, VP9, Opus, Vorbis... are not included" in default build. This could break common use cases.
-4. **Performance** - On-device processing is slow, especially on older devices. Need good UX (progress indicators, background processing).
-5. **Storage Management** - Processed files need storage. Where to put them? Cache vs permanent storage. Need cleanup strategy.
-6. **File Access Permissions** - SAF files on Android can be read-only in some contexts. Writing processed versions requires copying to app's cache directory.
-7. **Build Complexity** - Requires development builds (app already does), config plugin setup, prebuild step.
-8. **Expo Go Incompatibility** - Already not using Expo Go (needs dev builds) so this is fine.
-9. **FFmpegKit Retirement** - Old FFmpegKit was discontinued Jan 2025, so alternatives are still maturing.
+| # | Feature | Original rating | Re-evaluated | Why |
+| --- | --- | --- | --- | --- |
+| 1 | Waveform display | High | **Ship — done** | Shipped on PCM + SVG. Remaining work is polish, not feasibility |
+| 2 | Loudness leveling (was: `loudnorm`) | ★★★★☆ | **No FFmpeg needed → Ship** | `loudnorm`/`ebur128` are absent. Measure from the PCM we already decode, apply with `player.volume` |
+| 3 | Skip leading/trailing silence (was: `silenceremove`) | ★★★★☆ | **No FFmpeg needed → Ship** | `silenceremove` absent, but silence bounds fall out of the same peak data. Playback-side seek, nothing destructive |
+| 4 | Library pre-analysis (waveforms + levels) | rated ★★☆ (as "batch normalize") | **Ship, opt-in** | Only viable because analysis is now cheap and cacheable. Must be explicitly started, with progress and cancel |
+| 5 | Clip / ringtone export | ★★★★☆ | **Later** | AAC+M4A encode and `-ss/-to` are supported on paper, but unverified binaries, a source copy per export, and nowhere to put the file without an extra picker step |
+| 6 | Format conversion / transcode | ★★★★☆ | **Drop** | Output limited to AAC/M4A/WAV. Files that fail to play are already rare (platform decoders handle the scan set). No user problem to solve |
+| 7 | Crossfade / gapless preparation | ★★★☆ | **Drop** | `acrossfade` absent; pre-rendering junctions means decode+encode per transition and a fragile handoff to `expo-audio` |
+| 8 | Playback speed / pitch | ★★★☆ | **No FFmpeg needed → Later** | `playbackRate` + `shouldCorrectPitch` exist natively. A UI feature, unrelated to FFmpeg |
+| 9 | Real-time EQ / effects | ★★☆ | **Drop** | No filters, and real-time processing is not what a CLI FFmpeg does well anyway |
+| 10 | Stem separation / vocal removal | rated ★★☆ "later" | **Drop** | Needs ML models, minutes per track, GBs of weights |
+| 11 | Metadata / artwork extraction fallback | ★★★★☆ | **Drop** | `src/lib/tags.ts` already parses ID3/FLAC/MP4/OGG/APE from raw bytes; FFmpeg adds nothing and cannot write back through SAF |
+| 12 | Batch loudness normalization of the whole library | ★★★★☆ | **Drop as stated, folded into #4** | "Normalize everything" without asking is hours of I/O and battery. Becomes an analysis pass that makes playback quieter, not a rewrite of files |
 
-### Advantages
+Net result: of the six "high value" items in the first pass, **one is done, two
+change shape and stay, one is deferred, and two were false positives**.
 
-1. **Already needs dev builds** - No additional blocker there
-2. **Local-first architecture** - On-device processing fits the app's philosophy
-3. **Well-structured codebase** - Easy to add services/utils for FFmpeg
-4. **File system abstraction exists** - `expo-file-system` usage patterns established
+---
 
-## Recommended Features to Add
+## 4. What ships next
 
-Based on impact vs effort vs feasibility, I recommend adding these features in order:
+### P0 — Capability probe (do first, ~1 small change)
 
-### Priority 1: ReplayGain/Loudness Normalization
-- **Why**: Track type already has `gain` field, parsed and displayed. This is the lowest-hanging fruit conceptually - the data is already there but unused.
-- **Implementation**: 
-  - Option A: Apply during playback using FFmpeg filters (complex, latency issues)
-  - Option B: Pre-process tracks on-demand with `loudnorm` filter, cache normalized version
-  - Option C: Use simple gain adjustment if ReplayGain tags present
-- **Recommended**: Start with Option C (simple gain) using expo-audio's volume control if possible, or pre-process with `volume` filter. For true EBU R128 normalization, use `loudnorm`.
-- **Storage**: Cache normalized files in app cache directory
+The first waveform attempt failed because the plan trusted a README. Make the
+device answer instead.
 
-### Priority 2: Waveform Generation
-- **Why**: Major UI improvement, enhances the music player experience
-- **Implementation**: Generate waveform data (peaks) using `showwavespic` filter or extract PCM data. Cache as JSON array of amplitudes.
-- **UI**: Enhance ProgressBar to show waveform visualization
-- **Storage**: Small JSON files (~few KB per track)
+- `src/ffmpeg/probe.ts`: run `-hide_banner -filters`, `-encoders`, `-muxers`,
+  `-decoders` through the already-guarded `run()` and store the combined output
+  in the diagnostics log.
+- Settings → Diagnostics gets a "Check FFmpeg capabilities" row; the result is
+  copyable through the existing Share button.
+- **Why first:** it converts every binary-gate question in this document from an
+  assumption into a fact, for the actual build on the actual device.
 
-### Priority 3: Audio Trimming
-- **Why**: Useful feature users expect in modern music apps
-- **Implementation**: Add trim UI in track detail or context menu, use `atrim`/`trim` filters with re-encode
-- **Output**: Save trimmed version to app directory or let user export
+### P1 — Loudness leveling, attenuation only (~medium)
 
-### Priority 4: Silence Trimming (Auto)
-- **Why**: Cleans up tracks with long intros/outros
-- **Implementation**: Use `silenceremove` filter, could be automatic or opt-in
+**Design constraint found during re-evaluation:** `player.volume` is 0–1, so
+gain can only go *down*. Track leveling therefore means "bring loud tracks down
+to a common ceiling", not "make quiet ones louder" — the same behaviour as
+Sound Check, and the honest thing to document in the UI.
 
-## Implementation Plan Sketch
+- Extend the waveform cache file to `{ v: 2, peaks, rms, peak, lead, tail }`
+  (unknown fields are ignored, so no cache invalidation needed if the version
+  stays 1 and the fields are additive).
+- Measurement: reuse the decoded PCM. Frame the samples at ~50 ms, drop frames
+  below −50 dBFS, take the RMS of what remains, keep the true peak.
+- Target: the library's 95th-percentile RMS (falls back to a fixed −16 dBFS
+  until enough tracks are analysed). `gainDb = target − measured`, clamped to
+  `[−18, 0]`, then `volume = 10^(gainDb/20)`.
+- Apply in `audioEngine.load()` next to the existing `bindStatus` call, so it
+  survives track changes and does not fight user seeking.
+- Tagged files can use `Track.gain` immediately, before analysis catches up.
+- Toggle in Settings ("Volume leveling"), default off; the per-track dB value
+  already shown in `track/[id]` stays truthful.
+- **Acceptance:** on a playlist mixing a −8 dBFS master with a −16 dBFS master,
+  the perceived jump at track changes disappears, and no track clips.
 
-```typescript
-// Proposed structure
-src/
-  ffmpeg/
-    index.ts          // FFmpeg wrapper/service
-    normalize.ts      // Loudness normalization
-    waveform.ts       // Waveform generation
-    trim.ts           // Audio trimming
-    utils.ts          // File handling helpers
+### P2 — Skip leading/trailing silence (~small)
+
+- `lead` / `tail` come out of the same analysis: count leading/trailing bars
+  below −45 dBFS, times the bar duration.
+- Leading: `audioEngine.load(track, { startAt: max(resumePosition, lead) })` —
+  the engine already accepts `startAt`.
+- Trailing: when `position > duration − tail`, advance, instead of silence.
+- Toggle in Settings, default off. Audiobooks and live rips are the audiences.
+- **Acceptance:** a track with 4 s of lead silence starts audibly at 0:00; a
+  track with a clean ending advances without a gap of silence.
+
+### P3 — Waveform polish + opt-in library analysis (~medium)
+
+- Column count from available width (`~3 px` per bar) instead of a fixed 96, so
+  wide screens get detail instead of stretched bars.
+- "Analyze library" in Settings: a queue over undecoded tracks, sequential (one
+  native process at a time), progress row, cancel button, hard cap per run
+  (e.g. 200 tracks), and a battery/charging check if `expo-battery` is added —
+  otherwise: only on demand, never on launch.
+- Cache housekeeping: prune `waveforms/` entries for tracks no longer in the
+  library.
+- **Acceptance:** 50 tracks analyse without a crash, the app stays responsive,
+  and reopening the player is instant afterwards.
+
+### P4 — Clip / ringtone export (~medium, gated)
+
+Only after P0–P3 are validated on a real device.
+
+- `-ss <start> -to <end> -i <src> -c:a aac -b:a 192k -movflags +faststart <out>.m4a`
+  from a cached copy of the source.
+- Output goes to a folder chosen with `Directory.pickDirectoryAsync()` (SAF), so
+  no new dependency and no Android share-intent plumbing.
+- UI: a range selector drawn on the waveform (`trim` numbers already exist in
+  the peaks), "Save clip" in the track menu.
+- **Known limitations to state in the UI:** no MP3 output in this build, and
+  exports are re-encodes (quality loss on lossy sources).
+
+---
+
+## 5. Explicitly dropped, with evidence
+
+| Feature | Gate failed | Evidence |
+| --- | --- | --- |
+| `loudnorm` / `ebur128` analysis | Binary | Filter list in the package README |
+| `silenceremove` / `silencedetect` | Binary | Same |
+| `showwavespic`, `aformat` | Binary | Same — this is why the first waveform attempt failed on both platforms |
+| MP3 / FLAC / Opus export | Binary | Encoder list in the README |
+| Crossfade, EQ, stem separation, upscaling | Binary + Cost | Filters absent; ml models out of scope for a local player |
+| Real-time processing of any kind | Cost | A CLI process per buffer is the wrong architecture; the native player already owns the audio graph |
+| Rewriting tags or replacing library files | Exit | SAF grants are read-mostly, and destructive writes to a user's library are a support nightmare |
+
+---
+
+## 6. Sequencing
+
+```
+P0 probe  ──▶  P1 leveling  ──▶  P2 silence  ──▶  P3 library pass  ──▶  P4 clips
+ (facts)        (biggest UX      (cheap win,      (scales P1/P2,        (new surface,
+                 win, no deps)    same data)       explicit consent)     gated on all)
 ```
 
-**Key considerations:**
-- Only process on user action or with explicit opt-in (avoid surprise processing)
-- Always work on copies in cache directory, never modify originals
-- Show progress UI for long operations
-- Handle errors gracefully
-- Check if FFmpeg is available before using features
-- Consider device capabilities
+Each step is independently shippable and each step's data feeds the next: the
+analysis record added in P1 is what P2 and P3 read.
 
-## Final Recommendation
+---
 
-**Should we add FFmpeg?** Conditionally yes, but **start small and carefully**.
+## 7. What to measure on device before trusting any of this
 
-**Recommended approach:**
-1. **Evaluate first** - Add ffmpeg-expo as dev dependency, test in development build on real devices. See if it's stable enough for our needs.
-2. **Start with waveform generation** - Lower risk, read-only operation (doesn't modify originals), big UI win, easy to make optional.
-3. **Add ReplayGain normalization** - If users actually have tracks with different volumes, this is valuable. Start simple (apply gain from tags) before complex loudnorm.
-4. **Skip advanced features initially** - Don't do stem separation, don't batch process library.
+| Metric | Where | Target |
+| --- | --- | --- |
+| Decode time per track (3–5 min song) | `run()` `result.duration` | < 3 s |
+| Peak memory during decode | Xcode/Android Studio profiler | < 40 MB above baseline |
+| Cache size per track | `waveforms/*.json` | ≈ 2 KB |
+| Crash-free rate over 20 consecutive tracks | manual | 20/20 |
+| Waveform peaks line up with audible beats | eyeball | yes, before P1 is built |
+| Leveling A/B | two known-loud/quiet tracks | no perceived jump |
 
-**Critical warnings:**
-- ffmpeg-expo is still in early development - could have bugs or breaking changes
-- Default codec support is limited - need to test with actual file formats in the user's library
-- Processing time/battery impact - must be transparent to users
-- APK/IPA size increase
+---
 
-**Alternative approach:** Consider if expo-audio can handle normalization via volume adjustment first. For waveform, we could also generate it differently. Only reach for FFmpeg if native solutions are insufficient.
+## 8. Decisions needed
 
-Given this is a well-designed local music player, FFmpeg would add nice-to-have features but isn't critical. The most compelling additions are **waveform visualization** and **ReplayGain normalization**. Start with those, keep them optional, and be prepared to drop FFmpeg if stability becomes an issue.
+1. **Leveling target** — library-relative (adaptive, best result, needs P3 data)
+   or a fixed dBFS target (works from the first track, simpler)?
+2. **Silence skipping** — separate toggle, or implied by "leveling" being on?
+3. **Clip export** — is ringtone/clip creation actually wanted, or is P4 dead
+   weight for a player that is otherwise read-only?
+4. **Analysis consent** — is a manual "Analyze library" pass acceptable, or
+   should it run the first time a track is played and just never in bulk?
