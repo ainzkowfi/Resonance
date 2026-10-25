@@ -33,6 +33,7 @@ export interface PlayerState {
   toggle: () => void;
   next: () => void;
   previous: () => void;
+  playAt: (index: number) => void;
   seek: (seconds: number) => void;
   setRepeat: (mode: RepeatMode) => void;
   toggleShuffle: () => void;
@@ -180,6 +181,22 @@ export const usePlayerStore = create<PlayerState>()(
           set({ position: 0, resumePosition: 0 });
           void audioEngine.seek(0);
         }
+      },
+
+      playAt: (index) => {
+        const state = get();
+        const track = state.queue[index];
+        if (!track) return;
+        if (index === state.queueIndex && track.id === state.currentTrack?.id) return;
+        set({
+          currentTrack: track,
+          queueIndex: index,
+          position: 0,
+          duration: track.duration,
+          resumePosition: 0,
+          isPlaying: true,
+        });
+        loadTrack(track, { autoplay: true });
       },
 
       seek: (seconds) => {

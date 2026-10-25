@@ -3,14 +3,18 @@ import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BackHandler,
+  FlatList,
   StyleSheet,
   Text,
   View,
   useWindowDimensions,
   type LayoutChangeEvent,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
 } from 'react-native';
 import { Gesture, GestureDetector, usePanGesture } from 'react-native-gesture-handler';
 import Animated, {
+  Easing,
   FadeIn,
   FadeOut,
   Extrapolation,
@@ -29,11 +33,11 @@ import { formatDuration } from '../lib/format';
 import { usePlayerStore } from '../store/player';
 import { usePlayerSurface } from '../store/playerSurface';
 import { font, HIT, motion, palette, radius } from '../theme';
+import type { Track } from '../types/track';
 import { AmbientBackground } from './AmbientBackground';
 import { Artwork } from './Artwork';
 import { PLAYER_BAR_HEIGHT } from './bottomBar';
 import { EqBars } from './EqBars';
-import { Glass } from './Glass';
 import { LyricsView } from './LyricsView';
 import { ProgressBar, type ProgressBarProps } from './ProgressBar';
 import { Touch } from './Touch';
@@ -44,6 +48,8 @@ const absoluteFill = { position: 'absolute', top: 0, left: 0, right: 0, bottom: 
 
 const MINI_ART = 44;
 const MINI_PAD = 10;
+/** Drag distance that peels the lyrics away before the dock starts to shrink. */
+const LYRICS_REVEAL_DISTANCE = 140;
 
 /**
  * The player is one surface that morphs between the docked bar and full screen,
@@ -75,8 +81,8 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
 
   const [lyricsMode, setLyricsMode] = useState<LyricsMode>('off');
   const [stage, setStage] = useState({ x: 0, y: 0, size: 0, top: 0, height: 0 });
-  const pendingMiniEntry = useRef<number | null>(null);
-  const pendingMiniInstant = useRef(false);
+  const carouselRef = useRef<FlatList<Track>>(null);
+  const carouselSync = useRef<{ index: number; id: string | null }>({ index: -1, id: null });
   const reduceMotion = useReducedMotion();
   const lyrics = useTrackLyrics(track);
 
@@ -84,9 +90,7 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
   const dragX = useSharedValue(0);
   const shown = useSharedValue(0);
   const coverOpacity = useSharedValue(1);
-  const miniTrackX = useSharedValue(0);
-  const miniTrackOpacity = useSharedValue(1);
-  const miniGestureAxis = useSharedValue(0);
+  const lyricsOpacity = useSharedValue(1);
 
   useEffect(() => {
     expand.value = withSpring(expanded ? 1 : 0, motion.spring.smooth);
@@ -100,73 +104,76 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
     coverOpacity.value = withTiming(lyricsMode === 'over' ? 0 : 1, {
       duration: motion.base,
     });
-  }, [coverOpacity, lyricsMode]);
+    lyricsOpacity.value = withTiming(lyricsMode === 'over' ? 1 : 0, {
+      duration: motion.base,
+    });
+  }, [coverOpacity, lyricsMode, lyricsOpacity]);
 
   useEffect(() => {
-    const direction = pendingMiniEntry.current;
-    if (direction === null) return;
-    pendingMiniEntry.current = null;
-    if (pendingMiniInstant.current) {
-      // A completed swipe already animated the old card off-screen. Keep the
-      // new track in place and fade its title/art in instead of sliding again.
-      pendingMiniInstant.current = false;
-      miniTrackX.set(0);
-      miniTrackOpacity.set(0);
-      miniTrackOpacity.set(withTiming(1, { duration: motion.base }));
-      return;
-    }
-    miniTrackX.set(reduceMotion ? 0 : -direction * Math.min(width * 0.22, 72));
-    miniTrackOpacity.set(0);
-    miniTrackX.set(withSpring(0, motion.spring.snappy));
-    miniTrackOpacity.set(withTiming(1, { duration: motion.fast }));
-  }, [miniTrackOpacity, miniTrackX, reduceMotion, track?.id, width]);
+    if (queue.length === 0) return;
+    const index = Math.max(0, Math.min(queueIndex, queue.length - 1));
+    const id = queue[index]?.id ?? null;
+    if (carouselSync.current.index === index && carouselSync.current.id === id) return;
+    carouselSync.current = { index, id };
+    const frame = requestAnimationFrame(() => {
+      carouselRef.current?.scrollToOffset({
+        offset: index * width,
+        animated: !expanded && !reduceMotion,
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [expanded, queue, queueIndex, reduceMotion, width]);
 
   const collapse = useCallback(() => {
-    // Lyrics sit on top of the cover. First drag reveals the artwork; the next
-    // one docks the player. This keeps the collapse from jumping straight from
-    // text to the mini bar.
-    if (lyricsMode === 'over') {
-      setLyricsMode('off');
-      expand.value = withTiming(1, { duration: motion.base });
-      return;
-    }
     close();
     setLyricsMode('off');
-  }, [close, expand, lyricsMode]);
+  }, [close]);
 
-  const skip = useCallback(
-    (direction: number) => {
-      if (direction < 0) next();
-      else {
-        const state = usePlayerStore.getState();
-        // A mini-player swipe previews and selects the previous queue item;
-        // keep the button's usual "restart after 3 seconds" behavior intact.
-        if (state.queueIndex > 0 && state.position > 3) {
-          usePlayerStore.setState({ position: 0 });
-        }
-        previous();
-      }
+  const onCarouselEnd = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const state = usePlayerStore.getState();
+      if (state.queue.length === 0) return;
+      const index = Math.max(
+        0,
+        Math.min(
+          state.queue.length - 1,
+          Math.round(event.nativeEvent.contentOffset.x / width),
+        ),
+      );
+      const target = state.queue[index];
+      if (!target) return;
+      if (index === state.queueIndex && target.id === state.currentTrack?.id) return;
+      carouselSync.current = { index, id: target.id };
+      state.playAt(index);
     },
-    [next, previous],
+    [width],
   );
 
-  const skipFromMini = useCallback(
-    (direction: number) => {
-      const before = usePlayerStore.getState().currentTrack?.id;
-      pendingMiniEntry.current = direction;
-      pendingMiniInstant.current = true;
-      skip(direction);
-      const after = usePlayerStore.getState().currentTrack?.id;
-      if (before === after) {
-        pendingMiniEntry.current = null;
-        pendingMiniInstant.current = false;
-        miniTrackX.set(0);
-        miniTrackOpacity.set(0);
-        miniTrackOpacity.set(withTiming(1, { duration: motion.base }));
+  const selectPage = useCallback(
+    (index: number) => {
+      const state = usePlayerStore.getState();
+      const target = state.queue[index];
+      if (!target) return;
+      if (index !== state.queueIndex || target.id !== state.currentTrack?.id) {
+        carouselSync.current = { index, id: target.id };
+        state.playAt(index);
       }
+      open();
     },
-    [miniTrackOpacity, miniTrackX, skip],
+    [open],
   );
+
+  const togglePage = useCallback((index: number) => {
+    const state = usePlayerStore.getState();
+    const target = state.queue[index];
+    if (!target) return;
+    if (index === state.queueIndex && target.id === state.currentTrack?.id) {
+      state.toggle();
+      return;
+    }
+    carouselSync.current = { index, id: target.id };
+    state.playAt(index);
+  }, []);
 
   useEffect(() => {
     if (!expanded) return;
@@ -200,14 +207,17 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
     const size = stage.size;
     const k = size > 0 ? MINI_ART / size : 1;
     return {
-      opacity: (size > 0 ? 1 : 0) * miniTrackOpacity.get(),
+      // The docked carousel owns the artwork at rest; the full-size copy takes
+      // over the instant the player starts expanding.
+      opacity:
+        (size > 0 ? 1 : 0) *
+        interpolate(e, [0, 0.02], [0, 1], Extrapolation.CLAMP),
       borderRadius: interpolate(e, [0, 1], [radius.sm / k, radius.lg]),
       transform: [
         {
           translateX:
             interpolate(e, [0, 1], [miniCx - (stage.x + size / 2), 0]) +
-            dragX.get() +
-            miniTrackX.get(),
+            dragX.get(),
         },
         {
           translateY: interpolate(e, [0, 1], [miniCy - (stage.y + size / 2), 0]),
@@ -215,56 +225,19 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
         { scale: interpolate(e, [0, 1], [k, 1]) },
       ],
     };
-  }, [stage, miniCx, miniCy, dragX, miniTrackOpacity, miniTrackX]);
+  }, [stage, miniCx, miniCy, dragX, expand]);
 
-  const miniTrackStyle = useAnimatedStyle(() => ({
-    opacity: miniTrackOpacity.get(),
-    transform: [{ translateX: miniTrackX.get() }],
+  const miniArtStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(expand.value, [0, 0.05], [1, 0], Extrapolation.CLAMP),
   }));
 
   const coverStyle = useAnimatedStyle(() => ({
     opacity: coverOpacity.value,
   }));
 
-  const nextTrack =
-    repeat === 'one'
-      ? track
-      : queueIndex < queue.length - 1
-        ? queue[queueIndex + 1]
-        : repeat === 'all' && queue.length > 1
-          ? queue[0]
-          : null;
-  const previousTrack = queueIndex > 0 ? queue[queueIndex - 1] : track;
-  const canSwipeNext = Boolean(nextTrack);
-  const canSwipePrevious = Boolean(previousTrack);
-
-  const nextPreviewStyle = useAnimatedStyle(() => {
-    const x = miniTrackX.get();
-    const progress = interpolate(
-      -Math.min(0, x),
-      [0, Math.max(1, width * 0.62)],
-      [0, 1],
-      Extrapolation.CLAMP,
-    );
-    return {
-      opacity: progress,
-      transform: [{ translateX: width + Math.min(0, x) }],
-    };
-  }, [miniTrackX, width]);
-
-  const previousPreviewStyle = useAnimatedStyle(() => {
-    const x = miniTrackX.get();
-    const progress = interpolate(
-      Math.max(0, x),
-      [0, Math.max(1, width * 0.62)],
-      [0, 1],
-      Extrapolation.CLAMP,
-    );
-    return {
-      opacity: progress,
-      transform: [{ translateX: -width + Math.max(0, x) }],
-    };
-  }, [miniTrackX, width]);
+  const lyricsStyle = useAnimatedStyle(() => ({
+    opacity: lyricsOpacity.value,
+  }));
 
   const miniStyle = useAnimatedStyle(() => {
     const visible = shown.value;
@@ -295,6 +268,15 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
           if (Math.abs(event.translationX) > Math.abs(event.translationY)) {
             dragX.value = event.translationX;
           } else if (event.translationY > 0) {
+            if (lyricsMode === 'over') {
+              const dy = Math.max(0, event.translationY);
+              const reveal = Math.min(1, dy / LYRICS_REVEAL_DISTANCE);
+              coverOpacity.value = reveal;
+              lyricsOpacity.value = 1 - reveal;
+              const shrink = Math.max(0, dy - LYRICS_REVEAL_DISTANCE);
+              expand.value = Math.max(0, 1 - shrink / (height * 0.4));
+              return;
+            }
             expand.value = Math.max(0, 1 - event.translationY / (height * 0.4));
           }
         })
@@ -303,100 +285,40 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
           if (Math.abs(event.translationX) > Math.abs(event.translationY)) {
             if (event.translationX < -70) scheduleOnRN(next);
             else if (event.translationX > 70) scheduleOnRN(previous);
+          } else if (lyricsMode === 'over') {
+            if (event.translationY > 90 || event.velocityY > 700) scheduleOnRN(collapse);
+            else {
+              coverOpacity.value = withTiming(0, { duration: motion.base });
+              lyricsOpacity.value = withTiming(1, { duration: motion.base });
+              expand.value = withSpring(1, motion.spring.smooth);
+            }
           } else if (event.translationY > 110 || event.velocityY > 900) {
             scheduleOnRN(collapse);
           } else {
             expand.value = withSpring(1, motion.spring.smooth);
           }
         }),
-    [collapse, dragX, expand, height, next, previous],
+    [collapse, coverOpacity, dragX, expand, height, lyricsMode, lyricsOpacity, next, previous],
   );
 
   const miniPan = usePanGesture({
-    activeOffsetY: [-14, 14],
-    activeOffsetX: [-24, 24],
+    // Horizontal movement belongs to the native carousel; this gesture only
+    // lifts the dock into the full player.
+    activeOffsetY: [-16, 16],
+    failOffsetX: [-24, 24],
     onUpdate: (event) => {
-      const absX = Math.abs(event.translationX);
-      const absY = Math.abs(event.translationY);
-      if (miniGestureAxis.get() === 0 && Math.max(absX, absY) > 12) {
-        // Accept diagonal thumb swipes while keeping the intended axis stable
-        // for the rest of the gesture.
-        miniGestureAxis.set(absX >= absY * 0.65 ? 1 : -1);
-      }
-      if (miniGestureAxis.get() === 1) {
-        // Keep the neighbor preview under the user's finger even when reduced
-        // motion is enabled; only the release animation changes in that mode.
-        miniTrackX.set(event.translationX);
-        miniTrackOpacity.set(
-          interpolate(
-            Math.abs(event.translationX),
-            [0, Math.max(1, width * 0.62)],
-            [1, 0.24],
-            Extrapolation.CLAMP,
-          ),
-        );
-      } else if (miniGestureAxis.get() === -1) {
-        miniTrackX.set(0);
-        miniTrackOpacity.set(1);
-        if (event.translationY < 0) {
-          expand.set(Math.min(1, -event.translationY / (height * 0.4)));
-        }
+      if (event.translationY < 0) {
+        expand.set(Math.min(1, -event.translationY / (height * 0.4)));
       }
     },
     onDeactivate: (event) => {
-      if (event.canceled) {
-        miniGestureAxis.set(0);
-        miniTrackX.set(withSpring(0, motion.spring.snappy));
-        miniTrackOpacity.set(withTiming(1, { duration: motion.fast }));
-        return;
-      }
-
-      const horizontal = miniGestureAxis.get() === 1;
-      miniGestureAxis.set(0);
-      const shouldSkip =
-        horizontal && (Math.abs(event.translationX) > 72 || Math.abs(event.velocityX) > 600);
-      if (shouldSkip) {
-        const swipeDirection =
-          (Math.abs(event.translationX) > 72 ? event.translationX : event.velocityX) < 0 ? -1 : 1;
-        const canSkip = swipeDirection < 0 ? canSwipeNext : canSwipePrevious;
-        if (!canSkip) {
-          miniTrackX.set(withSpring(0, { ...motion.spring.snappy, velocity: event.velocityX }));
-          miniTrackOpacity.set(withTiming(1, { duration: motion.fast }));
-          return;
-        }
-        if (reduceMotion) {
-          miniTrackX.set(0);
-          miniTrackOpacity.set(
-            withTiming(0, { duration: motion.fast }, (finished) => {
-              if (finished) scheduleOnRN(skipFromMini, swipeDirection);
-            }),
-          );
-        } else {
-          miniTrackOpacity.set(withTiming(0, { duration: motion.fast }));
-          miniTrackX.set(
-            withTiming(
-              swipeDirection * width,
-              { duration: 220 },
-              (finished) => {
-                if (finished) scheduleOnRN(skipFromMini, swipeDirection);
-              },
-            ),
-          );
-        }
-        return;
-}
-
-      // Sub-threshold horizontal: snap back instantly without spring animation
-      if (horizontal) {
-        miniTrackX.set(0);
-        miniTrackOpacity.set(1);
-      } else {
-        miniTrackX.set(withSpring(0, { ...motion.spring.snappy, velocity: event.velocityX }));
-        miniTrackOpacity.set(withTiming(1, { duration: motion.fast }));
-      }
-      const shouldOpen = !horizontal && (expand.get() > 0.3 || event.velocityY < -600);
+      const shouldOpen = !event.canceled && (expand.get() > 0.3 || event.velocityY < -600);
       if (shouldOpen) scheduleOnRN(open);
-      else expand.set(withSpring(0, motion.spring.smooth));
+      else {
+        expand.set(
+          withTiming(0, { duration: motion.base, easing: Easing.out(Easing.cubic) }),
+        );
+      }
     },
   });
 
@@ -406,15 +328,34 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
         .activeOffsetY([-20, 20])
         .failOffsetX([-40, 40])
         .onUpdate((event) => {
-          if (event.translationY > 0) {
-            expand.value = Math.max(0, 1 - event.translationY / (height * 0.4));
+          if (lyricsMode === 'over') {
+            // One drag does both: peel the lyrics away to the cover, then keep
+            // shrinking the full player into the dock.
+            const dy = Math.max(0, event.translationY);
+            const reveal = Math.min(1, dy / LYRICS_REVEAL_DISTANCE);
+            coverOpacity.value = reveal;
+            lyricsOpacity.value = 1 - reveal;
+            const shrink = Math.max(0, dy - LYRICS_REVEAL_DISTANCE);
+            expand.value = Math.max(0, 1 - shrink / (height * 0.4));
+            return;
           }
+          if (event.translationY <= 0) return;
+          expand.value = Math.max(0, 1 - event.translationY / (height * 0.4));
         })
         .onEnd((event) => {
+          if (lyricsMode === 'over') {
+            if (event.translationY > 90 || event.velocityY > 700) scheduleOnRN(collapse);
+            else {
+              coverOpacity.value = withTiming(0, { duration: motion.base });
+              lyricsOpacity.value = withTiming(1, { duration: motion.base });
+              expand.value = withSpring(1, motion.spring.smooth);
+            }
+            return;
+          }
           if (event.translationY > 110 || event.velocityY > 900) scheduleOnRN(collapse);
           else expand.value = withSpring(1, motion.spring.smooth);
         }),
-    [collapse, expand, height],
+    [collapse, coverOpacity, expand, height, lyricsMode, lyricsOpacity],
   );
 
   const seed = track ? `${track.artist}${track.album ?? ''}` : '';
@@ -540,82 +481,72 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
         style={[styles.mini, { bottom }, miniStyle]}
         pointerEvents={!track || expanded ? 'none' : 'box-none'}
       >
-        <Glass style={styles.miniGlass} intensity={76} pointerEvents="none" />
         <GestureDetector gesture={miniPan}>
           <View style={styles.miniViewport}>
-            <Animated.View style={[styles.miniInner, miniTrackStyle]}>
-              <View style={styles.miniArt} />
-              <Touch style={styles.miniText} onPress={open} accessibilityLabel="Open player">
-                <Text numberOfLines={1} style={styles.miniTitle}>
-                  {track?.title ?? ''}
-                </Text>
-                <Text numberOfLines={1} style={styles.miniArtist}>
-                  {track?.artist ?? ''}
-                </Text>
-              </Touch>
-              <View style={styles.miniActions}>
-                <EqBars active={Boolean(isPlaying)} color={palette.accentAlt} height={16} />
-                <Touch
-                  style={styles.miniAction}
-                  glass
-                  onPress={toggle}
-                  accessibilityLabel={isPlaying ? 'Pause' : 'Play'}
-                >
-                  <Ionicons
-                    name={isPlaying ? 'pause' : 'play'}
-                    size={24}
-                    color={palette.text}
-                    style={!isPlaying ? styles.playIcon : undefined}
-                  />
-                </Touch>
-              </View>
-            </Animated.View>
-            {nextTrack ? (
-              <Animated.View
-                pointerEvents="none"
-                style={[styles.miniPreview, nextPreviewStyle]}
-              >
-                <View style={styles.miniPreviewArt}>
-                  <Artwork uri={nextTrack.artwork} size={MINI_ART} borderRadius={radius.sm} />
-                </View>
-                <View style={styles.miniPreviewText}>
-                  <View style={styles.miniPreviewHeading}>
-                    <Text numberOfLines={1} style={[styles.miniTitle, styles.miniPreviewTitle]}>
-                      {nextTrack.title}
-                    </Text>
-                    <Text style={styles.miniPreviewLabel}>NEXT</Text>
+            <FlatList
+              ref={carouselRef}
+              data={queue}
+              horizontal
+              pagingEnabled
+              bounces={false}
+              overScrollMode="never"
+              showsHorizontalScrollIndicator={false}
+              decelerationRate="fast"
+              scrollEnabled={queue.length > 1}
+              removeClippedSubviews={false}
+              style={styles.miniCarousel}
+              keyExtractor={(item, index) => `${item.id}-${index}`}
+              getItemLayout={(_, index) => ({
+                length: width,
+                offset: width * index,
+                index,
+              })}
+              initialScrollIndex={
+                queue.length > 0 ? Math.max(0, Math.min(queueIndex, queue.length - 1)) : undefined
+              }
+              extraData={`${queueIndex}:${track?.id ?? ''}:${isPlaying}`}
+              initialNumToRender={3}
+              maxToRenderPerBatch={3}
+              windowSize={3}
+              onMomentumScrollEnd={onCarouselEnd}
+              renderItem={({ item, index }) => {
+                const active = index === queueIndex && item.id === track?.id;
+                return (
+                  <View style={[styles.miniPage, { width }]}>
+                    <Animated.View style={miniArtStyle}>
+                      <Artwork uri={item.artwork} size={MINI_ART} borderRadius={radius.sm} />
+                    </Animated.View>
+                    <Touch
+                      style={styles.miniText}
+                      onPress={() => selectPage(index)}
+                      accessibilityLabel="Open player"
+                    >
+                      <Text numberOfLines={1} style={styles.miniTitle}>
+                        {item.title}
+                      </Text>
+                      <Text numberOfLines={1} style={styles.miniArtist}>
+                        {item.artist}
+                      </Text>
+                    </Touch>
+                    <View style={styles.miniActions}>
+                      <EqBars active={active && isPlaying} color={palette.accentAlt} height={16} />
+                      <Touch
+                        style={styles.miniAction}
+                        onPress={() => togglePage(index)}
+                        accessibilityLabel={active && isPlaying ? 'Pause' : 'Play'}
+                      >
+                        <Ionicons
+                          name={active && isPlaying ? 'pause' : 'play'}
+                          size={24}
+                          color={palette.text}
+                          style={!active || !isPlaying ? styles.playIcon : undefined}
+                        />
+                      </Touch>
+                    </View>
                   </View>
-                  <Text numberOfLines={1} style={styles.miniArtist}>
-                    {nextTrack.artist}
-                  </Text>
-                </View>
-                <Ionicons name="play-forward" size={18} color={palette.accent} />
-              </Animated.View>
-            ) : null}
-            {previousTrack ? (
-              <Animated.View
-                pointerEvents="none"
-                style={[styles.miniPreview, previousPreviewStyle]}
-              >
-                <View style={styles.miniPreviewArt}>
-                  <Artwork uri={previousTrack.artwork} size={MINI_ART} borderRadius={radius.sm} />
-                </View>
-                <View style={styles.miniPreviewText}>
-                  <View style={styles.miniPreviewHeading}>
-                    <Text numberOfLines={1} style={[styles.miniTitle, styles.miniPreviewTitle]}>
-                      {previousTrack.title}
-                    </Text>
-                    <Text style={styles.miniPreviewLabel}>
-                      {queueIndex > 0 ? 'PREV' : 'RESTART'}
-                    </Text>
-                  </View>
-                  <Text numberOfLines={1} style={styles.miniArtist}>
-                    {previousTrack.artist}
-                  </Text>
-                </View>
-                <Ionicons name="play-back" size={18} color={palette.accent} />
-              </Animated.View>
-            ) : null}
+                );
+              }}
+            />
           </View>
         </GestureDetector>
         <MiniProgress />
@@ -651,7 +582,7 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
         <Animated.View
           entering={FadeIn.duration(200)}
           exiting={FadeOut.duration(140)}
-          style={[styles.lyricsPanel, { top: stage.top, height: stage.height }]}
+          style={[styles.lyricsPanel, { top: stage.top, height: stage.height }, lyricsStyle]}
         >
           <LyricsView lyrics={lyrics} onSeek={seek} />
           <LyricsToggle shown onPress={() => setLyricsMode('off')} />
@@ -857,67 +788,22 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     height: PLAYER_BAR_HEIGHT,
-  },
-  miniGlass: {
-    ...absoluteFill,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: palette.glassBorder,
+    backgroundColor: palette.surface,
   },
   miniViewport: {
     flex: 1,
     height: PLAYER_BAR_HEIGHT,
     overflow: 'hidden',
   },
-  miniInner: {
+  miniCarousel: {
     flex: 1,
+  },
+  miniPage: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: MINI_PAD,
-    gap: 8,
-  },
-  miniPreview: {
-    ...absoluteFill,
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: MINI_PAD,
-    gap: 8,
-    backgroundColor: 'rgba(8,14,22,0.96)',
-  },
-  miniPreviewArt: {
-    width: MINI_ART,
-    height: MINI_ART,
-  },
-  miniPreviewText: {
-    flex: 1,
     height: PLAYER_BAR_HEIGHT,
-    justifyContent: 'center',
-    gap: 1,
-  },
-  miniPreviewHeading: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  miniPreviewTitle: {
-    flexShrink: 1,
-  },
-  miniPreviewLabel: {
-    ...font.caption,
-    fontSize: 8,
-    letterSpacing: 0.8,
-    fontWeight: '700',
-    color: palette.accent,
-    paddingHorizontal: 5,
-    paddingVertical: 2,
-    borderRadius: radius.sm,
-    backgroundColor: palette.selection,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(154,242,255,0.28)',
-    overflow: 'hidden',
-  },
-  miniArt: {
-    width: MINI_ART,
-    height: MINI_ART,
+    paddingHorizontal: MINI_PAD,
+    gap: 8,
   },
   miniText: {
     flex: 1,

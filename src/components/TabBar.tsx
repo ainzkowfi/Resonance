@@ -5,7 +5,6 @@ import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-na
 import type { BottomTabBarProps } from 'expo-router/js-tabs';
 
 import { font, motion, palette, radius } from '../theme';
-import { Glass } from './Glass';
 import { Touch } from './Touch';
 
 export const TAB_ROW_HEIGHT = 58;
@@ -47,7 +46,6 @@ export function TabBar({ state, descriptors, navigateToTab, insets }: BottomTabB
 
   return (
     <View style={styles.root}>
-      <Glass pointerEvents="none" intensity={78} style={StyleSheet.absoluteFill} />
       <View
         style={[
           styles.row,
@@ -119,6 +117,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
+    backgroundColor: palette.surface,
     zIndex: 30,
     elevation: 30,
   },
