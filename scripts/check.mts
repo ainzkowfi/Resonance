@@ -15,6 +15,7 @@ import {
   parseWav,
   sniffFormat,
 } from '../src/lib/tags.ts';
+import { peaksFromWav } from '../src/lib/wav.ts';
 
 let checks = 0;
 function ok(condition: boolean, message: string) {
@@ -448,5 +449,70 @@ ok(
     'Signal Test',
   'fuzzySearch sorts best first',
 );
+
+// ------------------------------------------------------------ waveform peaks
+
+/** Builds a mono 16-bit WAV, optionally with a junk chunk before `data`. */
+function makeWav(samples: Int16Array, sampleRate = 8000, junkBytes?: number): Uint8Array {
+  const data = new Uint8Array(samples.length * 2);
+  const dataView = new DataView(data.buffer);
+  for (let i = 0; i < samples.length; i++) dataView.setInt16(i * 2, samples[i], true);
+
+  const junk = junkBytes ?? 0;
+  const header = new Uint8Array(44 + (junk > 0 ? 8 + junk + (junk % 2) : 0));
+  const view = new DataView(header.buffer);
+  const writeText = (offset: number, text: string) => {
+    for (let i = 0; i < text.length; i++) header[offset + i] = text.charCodeAt(i);
+  };
+
+  const bodyBytes = 36 + data.length + (junk > 0 ? 8 + junk + (junk % 2) : 0);
+  writeText(0, 'RIFF');
+  view.setUint32(4, bodyBytes, true);
+  writeText(8, 'WAVE');
+  writeText(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+
+  let cursor = 36;
+  if (junk > 0) {
+    writeText(cursor, 'JUNK');
+    view.setUint32(cursor + 4, junk, true);
+    cursor += 8 + junk + (junk % 2);
+  }
+  writeText(cursor, 'data');
+  view.setUint32(cursor + 4, data.length, true);
+  cursor += 8;
+
+  const out = new Uint8Array(header.length + data.length);
+  out.set(header);
+  out.set(data, header.length);
+  return out;
+}
+
+// One second of silence, then one second of a full-scale tone.
+const half = 8000;
+const tone = new Int16Array(half * 2);
+for (let i = half; i < half * 2; i++) tone[i] = Math.sin((2 * Math.PI * 440 * i) / 8000) > 0 ? 30000 : -30000;
+
+const peaks = peaksFromWav(makeWav(tone), 96);
+ok(peaks !== undefined, 'peaks are produced from a valid WAV');
+ok(peaks?.length === 96, `expected 96 bars, got ${peaks?.length}`);
+ok(peaks?.every((value) => value >= 0 && value <= 1), 'peaks stay inside 0..1');
+ok((peaks?.[0] ?? 1) < 0.01, 'the silent half is drawn flat');
+ok((peaks?.[95] ?? 0) > 0.9, 'the loud half reaches the top of the waveform');
+ok(Math.max(...(peaks ?? [0])) === 1, 'the loudest bar normalises to 1');
+
+const withJunk = peaksFromWav(makeWav(tone, 8000, 7), 96);
+ok(withJunk?.length === 96, 'unknown chunks before data are skipped');
+ok(withJunk?.[95] === peaks?.[95], 'a junk chunk does not change the peaks');
+
+ok(peaksFromWav(makeWav(new Int16Array(half)), 96) === undefined, 'silence yields no waveform');
+ok(peaksFromWav(new Uint8Array(44), 96) === undefined, 'an empty WAV yields no waveform');
+ok(peaksFromWav(makeWav(tone), 0) === undefined, 'a zero bar count is rejected');
 
 console.log(`ok - ${checks} checks passed`);

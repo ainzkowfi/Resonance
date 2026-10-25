@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
 import { useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Platform, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   FadeInDown,
@@ -15,7 +15,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BOTTOM_BAR_SPACE } from '../../components/bottomBar';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { Touch } from '../../components/Touch';
+import { getFFmpegInfo } from '../../ffmpeg/waveform';
 import { formatDuration } from '../../lib/format';
+import { formatIssues, useDiagnosticsStore } from '../../store/diagnostics';
 import { useLibraryStore } from '../../store/library';
 import { usePlayerStore } from '../../store/player';
 import { font, palette, radius } from '../../theme';
@@ -30,6 +32,24 @@ export default function SettingsScreen() {
   const hiddenCount = useLibraryStore((state) => state.hidden.length);
   const folder = useLibraryStore((state) => state.folder);
   const scan = useLibraryStore((state) => state.scan);
+  const issues = useDiagnosticsStore((state) => state.issues);
+  const clearIssues = useDiagnosticsStore((state) => state.clearIssues);
+  const [ffmpeg, setFfmpeg] = useState('Checking…');
+
+  useEffect(() => {
+    let active = true;
+    void getFFmpegInfo().then((value) => {
+      if (active) setFfmpeg(value);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const diagnostics = `Resonance diagnostics\nFFmpeg: ${ffmpeg}\n${Platform.OS} ${String(
+    Platform.Version,
+  )}\n\n${formatIssues(issues)}`;
+
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
       <ScreenHeader title="Settings" subtitle="Playback, library and credits" />
@@ -64,6 +84,30 @@ export default function SettingsScreen() {
             onPress={() => router.push('/hidden')}
           />
           <InfoRow icon="list" label="Tracks in queue" value={String(queueLength)} />
+        </Section>
+
+        <Section title="Diagnostics">
+          <InfoRow icon="hardware-chip-outline" label="FFmpeg" value={ffmpeg} />
+          <View style={styles.logBlock}>
+            <Text style={styles.logTitle}>Recent problems</Text>
+            <Text selectable style={styles.logText}>
+              {formatIssues(issues)}
+            </Text>
+          </View>
+          <Row
+            icon="share-outline"
+            label="Share error log"
+            hint="Send the log somewhere you can paste from"
+            onPress={() => void Share.share({ message: diagnostics })}
+          />
+          {issues.length > 0 ? (
+            <Row
+              icon="trash-outline"
+              label="Clear error log"
+              hint={`${issues.length} recorded`}
+              onPress={clearIssues}
+            />
+          ) : null}
         </Section>
 
         <Section title="Credits">
@@ -210,7 +254,9 @@ function InfoRow({
       <View style={styles.rowText}>
         <Text style={styles.rowLabel}>{label}</Text>
       </View>
-      <Text style={styles.rowValue}>{value}</Text>
+      <Text style={styles.rowValue} numberOfLines={2}>
+        {value}
+      </Text>
     </View>
   );
 }
@@ -266,6 +312,25 @@ const styles = StyleSheet.create({
   },
   rowValue: {
     ...font.label,
+    color: palette.textDim,
+    flexShrink: 1,
+    textAlign: 'right',
+  },
+  logBlock: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 6,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: palette.border,
+  },
+  logTitle: {
+    ...font.caption,
+    color: palette.textFaint,
+  },
+  logText: {
+    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
+    fontSize: 11,
+    lineHeight: 16,
     color: palette.textDim,
   },
   toggle: {

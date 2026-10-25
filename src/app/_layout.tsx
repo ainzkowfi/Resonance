@@ -1,19 +1,48 @@
+import { type ErrorBoundaryProps, Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { Stack } from 'expo-router';
 import { useEffect } from 'react';
-import { StyleSheet } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { audioEngine } from '../audio/engine';
+import { ErrorScreen } from '../components/ErrorScreen';
 import { TrackMenu } from '../components/TrackMenu';
+import { absorbCrashMarker } from '../ffmpeg/waveform';
+import { installGlobalErrorHandler } from '../lib/errorHandler';
+import { formatFatal, useDiagnosticsStore } from '../store/diagnostics';
 import { palette } from '../theme';
 
+/**
+ * Shown by Expo Router when a screen throws while rendering. Without it, a
+ * release build closes and the report is lost.
+ */
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return (
+    <ErrorScreen
+      title="This screen crashed"
+      message={error?.message || 'Unknown error'}
+      detail={[error?.stack, `${Platform.OS} ${String(Platform.Version)}`]
+        .filter(Boolean)
+        .join('\n\n')}
+      onRetry={() => void retry()}
+      retryLabel="Reload screen"
+    />
+  );
+}
+
 export default function RootLayout() {
+  const fatal = useDiagnosticsStore((state) => state.fatal);
+  const clearFatal = useDiagnosticsStore((state) => state.clearFatal);
+
   // Configure audio focus and background playback as early as possible.
   useEffect(() => {
     void audioEngine.configure();
+    // A leftover marker means the last waveform run killed the process.
+    void absorbCrashMarker();
   }, []);
+
+  useEffect(() => installGlobalErrorHandler(), []);
 
   return (
     <GestureHandlerRootView style={styles.root}>
@@ -39,6 +68,17 @@ export default function RootLayout() {
           <Stack.Screen name="playlist/[id]" options={{ animation: 'slide_from_right' }} />
         </Stack>
         <TrackMenu />
+        {fatal ? (
+          <View style={styles.overlay}>
+            <ErrorScreen
+              title="Something broke"
+              message={fatal.message}
+              detail={formatFatal(fatal)}
+              onDismiss={clearFatal}
+              dismissLabel="Keep using the app"
+            />
+          </View>
+        ) : null}
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
@@ -48,5 +88,13 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: palette.bg,
+  },
+  overlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    zIndex: 100,
   },
 });

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Image, StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   Easing,
@@ -9,9 +9,10 @@ import Animated, {
 } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
 
-import { generateWaveform, getWaveform } from '../ffmpeg/waveform';
+import { useWaveform } from '../hooks/useWaveform';
 import { usePlayerStore } from '../store/player';
 import { motion, palette } from '../theme';
+import { Waveform } from './Waveform';
 
 export interface ProgressBarProps {
   /** Seconds. */
@@ -27,10 +28,12 @@ export interface ProgressBarProps {
   simultaneousHandlers?: ReturnType<typeof Gesture.Pan> | ReturnType<typeof Gesture.Pan>[];
   /** Track ID for waveform visualization */
   trackId?: string;
-  /** Track URI for waveform generation */
+  /** Track URI for waveform decoding */
   trackUri?: string;
-  /** Show waveform */
+  /** Show a waveform instead of the plain line once peaks are available */
   showWaveform?: boolean;
+  /** Height of the waveform area. */
+  waveformHeight?: number;
 }
 
 /**
@@ -38,6 +41,10 @@ export interface ProgressBarProps {
  *
  * Position and duration are mirrored into shared values so the pan gesture can
  * be created once and never stale.
+ *
+ * When `showWaveform` is set and peaks exist, the line is replaced by a
+ * waveform; the played part brightens through a clipped animated layer, and the
+ * same drag/tap maths apply to the whole bar.
  */
 export function ProgressBar({
   position,
@@ -51,6 +58,7 @@ export function ProgressBar({
   trackId,
   trackUri,
   showWaveform = false,
+  waveformHeight = 44,
 }: ProgressBarProps) {
   const width = useSharedValue(0);
   const positionValue = useSharedValue(0);
@@ -58,25 +66,13 @@ export function ProgressBar({
   const dragging = useSharedValue(false);
   const dragAmount = useSharedValue(0);
   const dragValue = useSharedValue(0);
-  const [waveformUri, setWaveformUri] = useState<string | null>(null);
+  const [layoutWidth, setLayoutWidth] = useState(0);
   const currentTrack = usePlayerStore((state) => state.currentTrack);
 
   const id = trackId ?? currentTrack?.id;
   const uri = trackUri ?? currentTrack?.uri;
-
-  useEffect(() => {
-    if (showWaveform && id && uri) {
-      getWaveform(id).then((existingUri) => {
-        if (existingUri) {
-          setWaveformUri(existingUri);
-        } else {
-          generateWaveform(uri, id).then((generatedUri) => {
-            if (generatedUri) setWaveformUri(generatedUri);
-          });
-        }
-      });
-    }
-  }, [id, uri, showWaveform]);
+  const peaks = useWaveform(showWaveform ? id : undefined, showWaveform ? uri : undefined);
+  const showBars = showWaveform && peaks != null && peaks.length > 0 && layoutWidth > 0;
 
   useEffect(() => {
     // The engine ticks every 250 ms; gliding each tick keeps the line moving.
@@ -165,25 +161,41 @@ export function ProgressBar({
   return (
     <GestureDetector gesture={gesture}>
       <View
-        style={[styles.hitArea, align === 'top' && styles.hitAreaTop]}
+        style={[
+          styles.hitArea,
+          showBars
+            ? { height: waveformHeight + 16, justifyContent: 'center' }
+            : align === 'top' && styles.hitAreaTop,
+        ]}
         onLayout={(event) => {
-          width.value = event.nativeEvent.layout.width;
+          const next = event.nativeEvent.layout.width;
+          width.value = next;
+          setLayoutWidth(next);
         }}
       >
-        <View style={[styles.track, { height, borderRadius: height / 2, backgroundColor: trackColor, overflow: 'hidden' }]}>
-          {showWaveform && waveformUri ? (
-            <Image
-              source={{ uri: waveformUri }}
-              style={[styles.waveform, { height }]}
-              resizeMode="stretch"
-            />
-          ) : null}
-          <Animated.View
-            style={[styles.fill, { height, borderRadius: height / 2, backgroundColor: color }, ratio]}
+        {showBars ? (
+          <Waveform
+            peaks={peaks}
+            width={layoutWidth}
+            height={waveformHeight}
+            color={color}
+            trackColor={trackColor}
+            progressStyle={ratio}
+          />
+        ) : (
+          <View
+            style={[
+              styles.track,
+              { height, borderRadius: height / 2, backgroundColor: trackColor, overflow: 'hidden' },
+            ]}
           >
-            <Animated.View style={[styles.thumb, { backgroundColor: color }, thumbStyle]} />
-          </Animated.View>
-        </View>
+            <Animated.View
+              style={[styles.fill, { height, borderRadius: height / 2, backgroundColor: color }, ratio]}
+            >
+              <Animated.View style={[styles.thumb, { backgroundColor: color }, thumbStyle]} />
+            </Animated.View>
+          </View>
+        )}
       </View>
     </GestureDetector>
   );
@@ -199,13 +211,6 @@ const styles = StyleSheet.create({
   },
   track: {
     width: '100%',
-  },
-  waveform: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    width: '100%',
-    opacity: 0.3,
   },
   fill: {
     position: 'absolute',
