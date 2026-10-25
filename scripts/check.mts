@@ -6,6 +6,9 @@ import { parseId3, parseId3v1, parseFilename } from '../src/lib/id3.ts';
 import { activeLineIndex, parseLrc, parsePlainLyrics } from '../src/lib/lrc.ts';
 import { basename, findCoverSidecar, findLyricsSidecar, looksLikeLrc, stemOf } from '../src/lib/lyrics.ts';
 import {
+  declaredTagBytes,
+  headWindowBytes,
+  MAX_TAG_BYTES,
   parseAiff,
   parseApev2,
   parseDuration,
@@ -522,6 +525,107 @@ ok(withJunk?.[95] === peaks?.[95], 'a junk chunk does not change the peaks');
 ok(peaksFromWav(makeWav(new Int16Array(half)), 96) === undefined, 'silence yields no waveform');
 ok(peaksFromWav(new Uint8Array(44), 96) === undefined, 'an empty WAV yields no waveform');
 ok(peaksFromWav(makeWav(tone), 0) === undefined, 'a zero bar count is rejected');
+
+// ------------------------------------------------------- declared tag window
+
+/** A bare ID3v2 header carrying `tagSize` as a syncsafe integer. */
+function id3Header(tagSize: number, major = 3, flags = 0): Uint8Array {
+  const bytes = new Uint8Array(10);
+  bytes[0] = 0x49; // I
+  bytes[1] = 0x44; // D
+  bytes[2] = 0x33; // 3
+  bytes[3] = major;
+  bytes[5] = flags;
+  bytes[6] = (tagSize >> 21) & 0x7f;
+  bytes[7] = (tagSize >> 14) & 0x7f;
+  bytes[8] = (tagSize >> 7) & 0x7f;
+  bytes[9] = tagSize & 0x7f;
+  return bytes;
+}
+
+ok(declaredTagBytes(id3Header(1000)) === 1010, 'an ID3v2.3 header declares header plus body');
+ok(declaredTagBytes(id3Header(0x2a)) === 52, 'the declared size is syncsafe, not a plain integer');
+ok(
+  declaredTagBytes(id3Header(1000, 4, 0x10)) === 1020,
+  'a v2.4 footer is counted towards the tag',
+);
+ok(
+  declaredTagBytes(id3Header(1000, 3, 0x10)) === 1010,
+  'v2.3 has no footer, so the flag does not extend the window',
+);
+ok(declaredTagBytes(id3Header(0)) === undefined, 'an empty tag declares nothing to read');
+ok(
+  declaredTagBytes(new Uint8Array([0x66, 0x4c, 0x61, 0x43, 0, 0, 0, 34, 0, 0])) === undefined,
+  'containers without a declared tag length report undefined',
+);
+ok(declaredTagBytes(new Uint8Array(4)) === undefined, 'a truncated header is not trusted');
+
+/** An ID3v2.3 tag holding a large cover first and the title after it. */
+function tagWithLateTitle(pictureBytes: number): Uint8Array {
+  const frame = (id: string, body: Uint8Array) => {
+    const header = new Uint8Array(10);
+    for (let i = 0; i < 4; i++) header[i] = id.charCodeAt(i);
+    const size = body.length;
+    header[4] = (size >> 24) & 0xff;
+    header[5] = (size >> 16) & 0xff;
+    header[6] = (size >> 8) & 0xff;
+    header[7] = size & 0xff;
+    const out = new Uint8Array(10 + body.length);
+    out.set(header);
+    out.set(body, 10);
+    return out;
+  };
+
+  const mime = 'image/jpeg';
+  // encoding, mime, zero, picture type, empty description, then image bytes.
+  const apic = new Uint8Array(mime.length + 4 + pictureBytes);
+  apic[mime.length + 1] = 0;
+  apic[mime.length + 2] = 3;
+  apic[mime.length + 3] = 0;
+  for (let i = 0; i < mime.length; i++) apic[1 + i] = mime.charCodeAt(i);
+
+  const title = 'Late Title';
+  const tit2 = new Uint8Array(1 + title.length);
+  tit2[0] = 3; // UTF-8
+  for (let i = 0; i < title.length; i++) tit2[1 + i] = title.charCodeAt(i);
+
+  const body = [...frame('APIC', apic), ...frame('TIT2', tit2)];
+  const header = id3Header(body.length);
+  const out = new Uint8Array(10 + body.length);
+  out.set(header);
+  out.set(body, 10);
+  return out;
+}
+
+const lateTag = tagWithLateTitle(70_000);
+ok(declaredTagBytes(lateTag) === lateTag.length, 'the declared size covers the whole tag');
+ok(parseTags(lateTag).title === 'Late Title', 'reading the declared size recovers a late title');
+ok(parseTags(lateTag).artwork !== undefined, 'and the cover that precedes it');
+ok(
+  parseTags(lateTag.subarray(0, 64 * 1024)).title === undefined,
+  'a 64 KB window would have cut the tag off before the title',
+);
+
+ok(
+  headWindowBytes(64 * 1024, 4 * 1024, 5_000_000) === 64 * 1024,
+  'a small declared tag needs no second read',
+);
+ok(
+  headWindowBytes(64 * 1024, 200 * 1024, 5_000_000) === 200 * 1024,
+  'a declared tag larger than the first window is read exactly',
+);
+ok(
+  headWindowBytes(64 * 1024, 5 * 1024 * 1024, 9_000_000) === MAX_TAG_BYTES,
+  'a huge declared tag is capped at the old fixed read',
+);
+ok(
+  headWindowBytes(64 * 1024, 4 * 1024, 1000) === 1000,
+  'a window never reads past the end of the file',
+);
+ok(
+  headWindowBytes(64 * 1024, undefined, 5_000_000) === 64 * 1024,
+  'an undeclared tag leaves the first window alone',
+);
 
 // ------------------------------------------------------ ffmpeg capability probe
 

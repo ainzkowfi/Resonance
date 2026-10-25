@@ -45,6 +45,53 @@ export function sniffFormat(head: Uint8Array): AudioFormat {
   return 'unknown';
 }
 
+/**
+ * Bytes the leading tag block says it occupies, or `undefined` when the
+ * container does not declare it.
+ *
+ * An ID3v2 header carries its own length in a syncsafe integer, so a scanner
+ * can read the tag instead of guessing at a window: ten bytes of header, the
+ * declared body, and the optional v2.4 footer. Everything after that length is
+ * audio, so reading further buys nothing.
+ *
+ * FLAC declares its metadata blocks the same way, but block by block rather
+ * than in one number; that walk lives in `library/local.ts`.
+ */
+export function declaredTagBytes(head: Uint8Array): number | undefined {
+  if (head.length < 10 || ascii(head, 0, 3) !== 'ID3') return undefined;
+
+  const major = head[3];
+  const flags = head[5];
+  const size = syncsafeAt(head, 6);
+  if (size <= 0) return undefined;
+
+  const footer = major >= 4 && (flags & 0x10) !== 0 ? 10 : 0;
+  return 10 + size + footer;
+}
+
+/** Ceiling for a single tag read; a larger declared block is truncated, as before. */
+export const MAX_TAG_BYTES = 512 * 1024;
+
+/**
+ * How large a first window a file actually needs.
+ *
+ * With nothing declared, the caller's initial window is enough. With a size
+ * declared, it is read exactly — capped at what every file used to be read at,
+ * so this can only ever read less than the old fixed window did.
+ */
+export function headWindowBytes(
+  initialBytes: number,
+  declared: number | undefined,
+  fileSize: number,
+): number {
+  if (!(initialBytes > 0)) return 0;
+  const cap = fileSize > 0 ? Math.min(fileSize, initialBytes) : initialBytes;
+  if (!declared || declared <= initialBytes) return cap;
+
+  const wanted = Math.min(declared, MAX_TAG_BYTES);
+  return fileSize > 0 ? Math.min(wanted, fileSize) : wanted;
+}
+
 function merge(base: TrackTags, extra: TrackTags): TrackTags {
   const out = { ...base } as Record<string, unknown>;
   for (const [key, value] of Object.entries(extra)) {

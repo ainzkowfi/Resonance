@@ -12,7 +12,10 @@ import {
   stemOf,
 } from '../lib/lyrics';
 import {
+  declaredTagBytes,
+  headWindowBytes,
   isAudioFilename,
+  MAX_TAG_BYTES,
   parseDuration,
   parseTags,
   sniffFormat,
@@ -37,7 +40,14 @@ import type { Lyrics, Track } from '../types/track';
  * all go through the same path.
  */
 
-const HEAD_BYTES = 512 * 1024;
+/**
+ * First window read per file. Large enough for the tag block of most files and
+ * an order of magnitude smaller than the old fixed 512 KB read; grown only when
+ * the container says it must be.
+ */
+const INITIAL_HEAD_BYTES = 64 * 1024;
+/** Ceiling for a single tag read — the window every file used to be read at. */
+const HEAD_BYTES = MAX_TAG_BYTES;
 const MAX_METADATA_BYTES = 8 * 1024 * 1024;
 const TAIL_BYTES = 1024 * 1024;
 const MAX_COVER_BYTES = 3 * 1024 * 1024;
@@ -180,22 +190,67 @@ function nextFlacMetadataReadSize(bytes: Uint8Array): number | undefined {
   return undefined;
 }
 
+/**
+ * Reads the smallest window that holds the file's tags.
+ *
+ * Scanning used to read 512 KB of every file up front, which is gigabytes of
+ * I/O for a large library. An ID3v2 file states where its tag ends, so the
+ * common case now reads the tag and stops; FLAC declares its metadata block by
+ * block, which is walked here rather than guessed at. The ID3 window is capped
+ * at what it used to be, so it never grows beyond it.
+ *
+ * `ceiling` bounds the FLAC walk: a full scan may read cover art to cache it,
+ * while a lyrics lookup only needs the comment block.
+ */
+async function readHeadWindow(
+  uri: string,
+  ceiling = MAX_METADATA_BYTES,
+): Promise<ByteWindow | undefined> {
+  let head = await readHead(uri, INITIAL_HEAD_BYTES);
+  if (!head) return undefined;
+
+  const wanted = headWindowBytes(head.data.length, declaredTagBytes(head.data), head.size);
+  if (wanted > head.data.length) {
+    const expanded = await readHead(uri, wanted);
+    if (expanded && expanded.data.length > head.data.length) head = expanded;
+  }
+
+  if (sniffFormat(head.data) !== 'flac') return head;
+
+  let required = nextFlacMetadataReadSize(head.data);
+  while (required && required > head.data.length && required <= ceiling) {
+    const expanded = await readHead(uri, Math.min(required, ceiling));
+    if (!expanded || expanded.data.length <= head.data.length) break;
+    head = expanded;
+    required = nextFlacMetadataReadSize(head.data);
+  }
+  return head;
+}
+
 async function readTrackFile(uri: string): Promise<ParsedFile> {
-  let head = await readHead(uri, HEAD_BYTES);
+  let head = await readHeadWindow(uri);
   if (!head) return { tags: {}, format: 'unknown' };
 
-  if (sniffFormat(head.data) === 'flac') {
-    let required = nextFlacMetadataReadSize(head.data);
-    while (required && required > head.data.length) {
-      const expanded = await readHead(uri, required);
-      if (!expanded || expanded.data.length <= head.data.length) break;
+  let format = sniffFormat(head.data);
+  let tags = parseTags(head.data);
+
+  // MP4 keeps `moov` wherever it likes, RIFF `LIST` chunks can trail the audio,
+  // and a Vorbis comment can sit past a large picture. None of those declare a
+  // size at the start, so fall back to the old window before giving up on them.
+  // MP3 and FLAC are left out on purpose: their tag blocks are declared at the
+  // start (FLAC's walked block by block above), so a missing title there means
+  // there is nothing further along, and a second read would only cost time.
+  const mayTagLater =
+    format === 'mp4' || format === 'ogg' || format === 'wav' || format === 'aiff' || format === 'unknown';
+  if (!tags.title && mayTagLater && head.data.length < HEAD_BYTES && head.size > head.data.length) {
+    const expanded = await readHead(uri, Math.min(HEAD_BYTES, head.size));
+    if (expanded && expanded.data.length > head.data.length) {
       head = expanded;
-      required = nextFlacMetadataReadSize(head.data);
+      format = sniffFormat(head.data);
+      tags = parseTags(head.data);
     }
   }
 
-  const format = sniffFormat(head.data);
-  let tags = parseTags(head.data);
   let tail: Uint8Array | undefined;
 
   const wantsTail =
@@ -450,7 +505,7 @@ export async function readLocalLyrics(track: Track): Promise<Lyrics | undefined>
 
   if (track.source !== 'local') return undefined;
 
-  const head = await readHead(track.uri, HEAD_BYTES);
+  const head = await readHeadWindow(track.uri, HEAD_BYTES);
   if (!head) return undefined;
   return toLyrics(parseTags(head.data).lyrics);
 }
