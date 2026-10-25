@@ -3,6 +3,7 @@ import { create } from 'zustand';
 import { createJSONStorage, persist, type PersistStorage } from 'zustand/middleware';
 import { audioEngine } from '../audio/engine';
 import { loadAnalysis, type TrackAnalysis } from '../ffmpeg/waveform';
+import { crossfadeStart, normalizeCrossfade } from '../lib/crossfade';
 import { shuffleArray } from '../lib/format';
 import { targetFromSamples, trackGainDb, volumeForGain } from '../lib/leveling';
 import { leadSkip, tailOut } from '../lib/silence';
@@ -39,6 +40,8 @@ export interface PlayerState {
   skipSilence: boolean;
   /** Trailing silence of the loaded track, seconds. Runtime-only. */
   silenceTail: number;
+  /** Blend length between queued tracks, seconds. 0 turns crossfading off. */
+  crossfade: number;
 
   playTracks: (tracks: Track[], startIndex?: number) => void;
   toggle: () => void;
@@ -54,6 +57,7 @@ export interface PlayerState {
   clearQueue: () => void;
   setLeveling: (enabled: boolean) => void;
   setSkipSilence: (enabled: boolean) => void;
+  setCrossfade: (seconds: number) => void;
   recordLevel: (trackId: string, rmsDb: number) => void;
   applyStatus: (status: {
     currentTime: number;
@@ -78,6 +82,7 @@ interface PersistedPlayerState {
   leveling: boolean;
   levels: Record<string, number>;
   skipSilence: boolean;
+  crossfade: number;
 }
 
 /** Median loudness only needs a representative sample, not every track ever. */
@@ -123,6 +128,7 @@ export const usePlayerStore = create<PlayerState>()(
       levels: {},
       skipSilence: false,
       silenceTail: 0,
+      crossfade: 0,
 
       playTracks: (tracks, startIndex = 0) => {
         if (tracks.length === 0) return;
@@ -179,7 +185,7 @@ export const usePlayerStore = create<PlayerState>()(
           resumePosition: 0,
           isPlaying: true,
         });
-        loadTrack(track, { autoplay: true });
+        loadTrack(track, { autoplay: true, crossfade: true });
       },
 
       previous: () => {
@@ -333,7 +339,7 @@ export const usePlayerStore = create<PlayerState>()(
         set({ leveling: enabled });
         const { currentTrack } = get();
         if (currentTrack) void applyTrackAnalysis(currentTrack, { seekLead: false });
-        else audioEngine.setVolume(1);
+        else audioEngine.setLevelGain(1);
       },
 
       setSkipSilence: (enabled) => {
@@ -342,6 +348,8 @@ export const usePlayerStore = create<PlayerState>()(
         // Never jump the track that is already playing; only learn its outro.
         if (enabled && currentTrack) void applyTrackAnalysis(currentTrack, { seekLead: false });
       },
+
+      setCrossfade: (seconds) => set({ crossfade: normalizeCrossfade(seconds) }),
 
       recordLevel: (trackId, rmsDb) => {
         if (!Number.isFinite(rmsDb)) return;
@@ -360,10 +368,13 @@ export const usePlayerStore = create<PlayerState>()(
           state.next();
           return;
         }
-        if (state.skipSilence && status.playing) {
-          // Advance at the start of the outro instead of sitting in silence.
-          const out = tailOut(state.duration, state.silenceTail);
-          if (out > 0 && status.currentTime >= out) {
+        if (status.playing) {
+          // Advance early enough to blend into the next track, or at the start
+          // of the outro when silence skipping is on. Whichever comes first.
+          const out = state.skipSilence ? tailOut(state.duration, state.silenceTail) : 0;
+          const blend = crossfadeStart(state.duration, state.crossfade);
+          const advanceAt = out > 0 && blend > 0 ? Math.min(out, blend) : out > 0 ? out : blend;
+          if (advanceAt > 0 && status.currentTime >= advanceAt) {
             state.next();
             return;
           }
@@ -421,15 +432,44 @@ export const usePlayerStore = create<PlayerState>()(
         leveling: state.leveling,
         levels: state.levels,
         skipSilence: state.skipSilence,
+        crossfade: state.crossfade,
       }),
     },
   ),
 );
 
+/**
+ * Leveling gain for a track, using anything already measured.
+ *
+ * Computed synchronously so a track starts at the right volume: waiting for the
+ * analysis would let the first second play at full level and then jump.
+ */
+function levelGainFor(track: Track, levels: Record<string, number>): number {
+  if (!usePlayerStore.getState().leveling) return 1;
+  const targetDb = targetFromSamples(Object.values(levels));
+  const gainDb = trackGainDb({ rmsDb: levels[track.id], tagGainDb: track.gain, targetDb });
+  return volumeForGain(gainDb);
+}
+
 /** Load through one place so a failed native load can never surface as an unhandled rejection. */
-function loadTrack(track: Track, options?: { autoplay?: boolean; startAt?: number }): void {
-  void audioEngine
-    .load(track, options)
+function loadTrack(
+  track: Track,
+  options: { autoplay?: boolean; startAt?: number; crossfade?: boolean } = {},
+): void {
+  const { crossfade = false, autoplay, startAt } = options;
+  const state = usePlayerStore.getState();
+  const seconds = crossfade ? state.crossfade : 0;
+  const gain = levelGainFor(track, state.levels);
+
+  let run: Promise<void>;
+  if (seconds > 0) {
+    run = audioEngine.crossfadeTo(track, { autoplay, startAt, seconds, gain });
+  } else {
+    audioEngine.setLevelGain(gain);
+    run = audioEngine.load(track, { autoplay, startAt });
+  }
+
+  void run
     // Analysis is cosmetic: never let it surface as a failed load.
     .then(() => applyTrackAnalysis(track).catch(() => undefined))
     .catch(() => {
@@ -463,7 +503,7 @@ async function applyTrackAnalysis(
   const wantSilence = initial.skipSilence;
 
   if (!track.uri || (!wantLeveling && !wantSilence)) {
-    audioEngine.setVolume(1);
+    audioEngine.setLevelGain(1);
     usePlayerStore.setState({ silenceTail: 0 });
     return;
   }
@@ -487,9 +527,9 @@ async function applyTrackAnalysis(
     }
     const targetDb = targetFromSamples(Object.values(usePlayerStore.getState().levels));
     const gainDb = trackGainDb({ rmsDb: analysis?.rmsDb, tagGainDb: track.gain, targetDb });
-    audioEngine.setVolume(volumeForGain(gainDb));
+    audioEngine.setLevelGain(volumeForGain(gainDb));
   } else {
-    audioEngine.setVolume(1);
+    audioEngine.setLevelGain(1);
   }
 
   if (wantSilence && analysis) {

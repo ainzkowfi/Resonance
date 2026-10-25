@@ -143,6 +143,35 @@ Sound Check, and the honest thing to document in the UI.
 - **Acceptance:** 50 tracks analyse without a crash, the app stays responsive,
   and reopening the player is instant afterwards.
 
+### P3.5 — Crossfade, in the engine rather than FFmpeg (shipped)
+
+Asked for together with gapless, so it is recorded here even though no FFmpeg
+filter is involved.
+
+- **Why not FFmpeg:** the build has no `afade`/`acrossfade`, and `volume` is a
+  static gain, so a blended junction cannot be rendered offline. Pre-rendering
+  would also mean playing a temp file, which breaks per-track seeking, queue
+  positions and lock-screen metadata.
+- **What shipped:** the engine now owns a small **gain bus** —
+  `player.volume = levelingGain × fadeGain` — so leveling and crossfading can
+  coexist instead of fighting over the volume. `crossfadeTo()` creates a second
+  player, promotes it immediately, ramps it 0→1 over 0–12 s (50 ms steps) while
+  ramping the outgoing player 1→0, then releases the outgoing player.
+- The queue advances `crossfade` seconds early so the blend lands on the
+  boundary, taking the earlier of that and the silence-skip out-point. Tracks
+  no longer than twice the blend are never crossfaded, which is what stops a
+  short track from triggering a second advance the instant it starts.
+- Status events are now checked against the active player, so a late event from
+  the outgoing player cannot advance the queue a second time.
+- Crossfade applies to queue advance and the next button; `previous`, picking a
+  track directly, and repeat-one stay hard cuts.
+- **Gapless:** not achievable with one `AudioPlayer` per source — encoder
+  delay/padding cannot be trimmed across two players, and there is no playlist
+  API. The remaining option is preloading the next source and calling
+  `player.replace()` just before the end, which shrinks the gap but does not
+  remove it. **Measure a baseline first**; silence skipping already removes the
+  audible trailing silence that people usually mean by "the gap".
+
 ### P4 — Clip / ringtone export (~medium, gated)
 
 Only after P0–P3 are validated on a real device.
@@ -166,7 +195,8 @@ Only after P0–P3 are validated on a real device.
 | `silenceremove` / `silencedetect` | Binary | Same |
 | `showwavespic`, `aformat` | Binary | Same — this is why the first waveform attempt failed on both platforms |
 | MP3 / FLAC / Opus export | Binary | Encoder list in the README |
-| Crossfade, EQ, stem separation, upscaling | Binary + Cost | Filters absent; ml models out of scope for a local player |
+| Crossfade *via FFmpeg* | Binary | No `afade`/`acrossfade`, static `volume` — implemented in the engine instead (P3.5) |
+| EQ, stem separation, upscaling | Binary + Cost | Filters absent; ml models out of scope for a local player |
 | Real-time processing of any kind | Cost | A CLI process per buffer is the wrong architecture; the native player already owns the audio graph |
 | Rewriting tags or replacing library files | Exit | SAF grants are read-mostly, and destructive writes to a user's library are a support nightmare |
 

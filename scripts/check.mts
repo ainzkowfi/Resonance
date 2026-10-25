@@ -16,6 +16,7 @@ import {
   sniffFormat,
 } from '../src/lib/tags.ts';
 import { planAnalysisQueue } from '../src/lib/analysisQueue.ts';
+import { crossfadeStart, normalizeCrossfade } from '../src/lib/crossfade.ts';
 import { buildCapabilities, condenseListing, formatReport, listNames } from '../src/lib/ffmpegReport.ts';
 import { targetFromSamples, trackGainDb, volumeForGain } from '../src/lib/leveling.ts';
 import { leadSkip, tailOut } from '../src/lib/silence.ts';
@@ -719,5 +720,23 @@ ok(planAnalysisQueue(library, noneCached, 2).length === 2, 'the queue respects t
 ok(planAnalysisQueue(library, noneCached, 0).length === 0, 'a zero cap plans nothing');
 ok(planAnalysisQueue([], noneCached).length === 0, 'an empty library plans nothing');
 ok(planAnalysisQueue(library, noneCached, 100).length === 3, 'a generous cap still stops at real work');
+
+// ---------------------------------------------------------------- crossfade
+
+ok(normalizeCrossfade(4) === 4, 'a whole-second blend is kept');
+ok(normalizeCrossfade(2.4) === 2, 'a fractional blend rounds down');
+ok(normalizeCrossfade(2.6) === 3, 'a fractional blend rounds up');
+ok(normalizeCrossfade(-3) === 0, 'a negative blend is off');
+ok(normalizeCrossfade(Number.NaN) === 0, 'a broken blend is off');
+ok(normalizeCrossfade(120) === 12, 'a greedy blend is capped');
+ok(normalizeCrossfade(0) === 0, 'zero means off');
+
+ok(crossfadeStart(200, 4) === 196, 'the next track starts before the boundary');
+ok(crossfadeStart(200, 0) === 0, 'no blend means no early start');
+ok(crossfadeStart(200, Number.NaN) === 0, 'a broken blend means no early start');
+ok(crossfadeStart(Number.NaN, 4) === 0, 'an unknown duration never triggers an advance');
+ok(crossfadeStart(8, 4) === 0, 'a track barely twice the blend is left alone');
+ok(crossfadeStart(9, 4) === 5, 'a track just long enough still blends');
+ok(crossfadeStart(4, 12) === 0, 'a blend longer than the track is ignored');
 
 console.log(`ok - ${checks} checks passed`);

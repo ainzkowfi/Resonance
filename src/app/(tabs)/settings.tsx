@@ -17,6 +17,7 @@ import { ScreenHeader } from '../../components/ScreenHeader';
 import { Touch } from '../../components/Touch';
 import { runCapabilityProbe } from '../../ffmpeg/probe';
 import { getFFmpegInfo } from '../../ffmpeg/waveform';
+import { MAX_CROSSFADE_SECONDS } from '../../lib/crossfade';
 import { formatDuration } from '../../lib/format';
 import { targetFromSamples } from '../../lib/leveling';
 import { MAX_TRACKS_PER_RUN } from '../../lib/analysisQueue';
@@ -43,6 +44,8 @@ export default function SettingsScreen() {
   const setLeveling = usePlayerStore((state) => state.setLeveling);
   const skipSilence = usePlayerStore((state) => state.skipSilence);
   const setSkipSilence = usePlayerStore((state) => state.setSkipSilence);
+  const crossfade = usePlayerStore((state) => state.crossfade);
+  const setCrossfade = usePlayerStore((state) => state.setCrossfade);
   const entries = useLibraryStore((state) => state.entries);
   const running = useAnalysisRunStore((state) => state.running);
   const analyzedCount = useAnalysisRunStore((state) => state.done);
@@ -181,6 +184,19 @@ export default function SettingsScreen() {
             value={skipSilence}
             onPress={() => void setSkipSilence(!skipSilence)}
           />
+          <RangeRow
+            icon="swap-horizontal-outline"
+            label="Crossfade"
+            hint={
+              crossfade === 0
+                ? 'Tracks change with a hard cut'
+                : `Blends the last ${crossfade} s of a track into the next`
+            }
+            value={crossfade}
+            max={MAX_CROSSFADE_SECONDS}
+            step={1}
+            onChange={setCrossfade}
+          />
         </Section>
 
         <Section title="Diagnostics">
@@ -306,6 +322,7 @@ function RangeRow({
   hint,
   value,
   max,
+  step = 5,
   onChange,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
@@ -313,6 +330,7 @@ function RangeRow({
   hint: string;
   value: number;
   max: number;
+  step?: number;
   onChange: (value: number) => void;
 }) {
   const [width, setWidth] = useState(0);
@@ -336,9 +354,9 @@ function RangeRow({
           if (width > 0) progress.value = Math.max(0, Math.min(1, event.x / width));
         })
         .onEnd(() => {
-          runOnJS(onChange)(Math.round((progress.value * max) / 5) * 5);
+          runOnJS(onChange)(Math.round((progress.value * max) / step) * step);
         }),
-    [max, onChange, progress, width],
+    [max, onChange, progress, step, width],
   );
 
   return (
