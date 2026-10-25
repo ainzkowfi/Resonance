@@ -24,6 +24,24 @@ import { median, sampleFromTiming, summarizeHandoffs } from '../src/lib/handoff.
 import { PRELOAD_LEAD_SECONDS, shouldPreload } from '../src/lib/preload.ts';
 import { buildCapabilities, condenseListing, formatReport, listNames } from '../src/lib/ffmpegReport.ts';
 import { evaluateExportCheck, selfTestWav } from '../src/lib/encodeCheck.ts';
+import {
+  extensionOf,
+  nativeCanPlay,
+  playbackPlatform,
+  shouldTranscode,
+  transcodeArgs,
+  unsupportedReason,
+} from '../src/lib/playbackSupport.ts';
+import {
+  addExclusion,
+  folderLabel,
+  folderPath,
+  isExcluded,
+  normalizeFolder,
+  removeExclusion,
+} from '../src/lib/folderExclusions.ts';
+import { INTERRUPTION_GRACE_MS, isExternalStop } from '../src/lib/interruption.ts';
+import { LOAD_WATCHDOG_MS, stalledLoadFailure } from '../src/lib/loadWatchdog.ts';
 import { targetFromSamples, trackGainDb, volumeForGain } from '../src/lib/leveling.ts';
 import { leadSkip, tailOut } from '../src/lib/silence.ts';
 import { columnsForWidth, resamplePeaks } from '../src/lib/waveform.ts';
@@ -743,6 +761,132 @@ const withSelfTest = formatReport({
 });
 ok(withSelfTest.includes('export round trip: passed'), 'the report states the round trip result');
 ok(!report.includes('export round trip'), 'a report without a run leaves the line out');
+
+// ------------------------------------------------ unplayable formats
+
+ok(extensionOf('file:///music/Song.OGG') === 'ogg', 'extensions are read from a URI and case-folded');
+ok(extensionOf('/music/track.opus?x=1') === 'opus', 'a query string is not part of the extension');
+ok(extensionOf('content://media/external/audio/media/42') === undefined, 'a URI without one has none');
+ok(playbackPlatform('ios') === 'ios' && playbackPlatform('web') === 'other', 'platforms map onto three cases');
+
+ok(!nativeCanPlay('/m/song.ogg', 'ios'), 'iOS cannot open Ogg');
+ok(nativeCanPlay('/m/song.ogg', 'android'), 'Android can open Ogg');
+ok(!nativeCanPlay('/m/song.ape', 'android'), 'no platform opens APE');
+ok(nativeCanPlay('/m/song.mp3', 'ios'), 'MP3 plays natively');
+ok(nativeCanPlay('/m/no-extension', 'ios'), 'an unrecognised container is still given to the player');
+
+ok(shouldTranscode('/m/song.ogg', 'ios'), 'an unplayable Ogg on iOS gets a converted copy');
+ok(!shouldTranscode('/m/song.ogg', 'android'), 'Ogg on Android is played as it is');
+ok(!shouldTranscode('/m/song.mp3', 'ios'), 'a supported format is never re-encoded');
+ok(!shouldTranscode('/m/no-extension', 'ios'), 'an unrecognised container is not converted blindly');
+
+ok(/iOS cannot play OGG/.test(unsupportedReason('/m/a.ogg', 'ios') ?? ''), 'the reason names the platform');
+ok(/APE/.test(unsupportedReason('/m/a.ape', 'android') ?? ''), 'the reason names the container');
+ok(unsupportedReason('/m/a.mp3', 'ios') === undefined, 'a playable file has no reason attached');
+
+// The silent case: iOS can leave an undecodable source unloaded with no error
+// at all, which is why a timer exists instead of trusting the status alone.
+ok(
+  stalledLoadFailure({ loaded: false, currentTime: 0, playing: false, error: null }) !== undefined,
+  'a source that never loads and never errors counts as a failure',
+);
+ok(
+  stalledLoadFailure({ loaded: true, currentTime: 0, playing: false }) === undefined,
+  'a loaded source is not stalled',
+);
+ok(
+  stalledLoadFailure({ loaded: false, currentTime: 0.4, playing: false }) === undefined,
+  'a source that played something is not stalled',
+);
+ok(
+  stalledLoadFailure({ loaded: false, currentTime: 0, playing: true }) === undefined,
+  'a source the engine reports as playing is not stalled',
+);
+ok(
+  stalledLoadFailure({ loaded: false, currentTime: 0, playing: false, error: 'boom' }) ===
+    undefined,
+  'a reported error is not also reported as a stall',
+);
+ok(LOAD_WATCHDOG_MS >= 5_000 && LOAD_WATCHDOG_MS <= 15_000, 'the watchdog waits seconds, not minutes');
+
+// ------------------------------------------- external audio interruptions
+
+const whilePlaying = {
+  expectedPlaying: true,
+  playing: true,
+  isLoaded: true,
+  isBuffering: false,
+  didJustFinish: false,
+  msSincePlaying: 4_000,
+};
+
+ok(!isExternalStop(whilePlaying), 'a playing track has not been interrupted');
+ok(isExternalStop({ ...whilePlaying, playing: false }), 'a stop nothing asked for is an interruption');
+ok(
+  !isExternalStop({ ...whilePlaying, playing: false, expectedPlaying: false }),
+  'a pause the app asked for is not an interruption',
+);
+ok(
+  !isExternalStop({ ...whilePlaying, playing: false, isBuffering: true }),
+  'buffering is not an interruption',
+);
+ok(
+  !isExternalStop({ ...whilePlaying, playing: false, isLoaded: false }),
+  'a source that has not loaded is not interrupted',
+);
+ok(
+  !isExternalStop({ ...whilePlaying, playing: false, didJustFinish: true }),
+  'the end of a track is not an interruption',
+);
+ok(
+  !isExternalStop({ ...whilePlaying, playing: false, msSincePlaying: 200 }),
+  'a stop within the grace period is ignored',
+);
+ok(
+  !isExternalStop({ ...whilePlaying, playing: false, msSincePlaying: 0 }),
+  'a track that never played cannot be interrupted',
+);
+ok(
+  INTERRUPTION_GRACE_MS >= 500 && INTERRUPTION_GRACE_MS <= 2_000,
+  'the grace period is a fraction of a second',
+);
+
+// ------------------------------------------------------ excluded folders
+
+const music = 'content://com.android.externalstorage.documents/tree/primary%3AMusic';
+const skip = `${music}/document/primary%3AMusic%2FSkip`;
+const skipper = `${music}/document/primary%3AMusic%2FSkipper`;
+const nested = `${skip}/document/primary%3AMusic%2FSkip%2FLive`;
+
+ok(isExcluded(skip, [skip]), 'an excluded folder matches itself');
+ok(isExcluded(nested, [skip]), 'an excluded folder covers everything beneath it');
+ok(!isExcluded(skipper, [skip]), 'a sibling sharing a name prefix is not excluded');
+ok(isExcluded('/Music/Skip/Live', ['/Music/Skip']), 'plain paths match the same way');
+ok(isExcluded('/Music/Skip', ['/Music/Skip/']), 'a trailing slash does not matter');
+ok(isExcluded('/music/skip/live', ['/Music/Skip']), 'case does not matter');
+ok(!isExcluded('/Music', [skip]), 'the parent of an exclusion is still scanned');
+ok(!isExcluded('/Music/Albums', [skip]), 'an unrelated folder is untouched');
+ok(normalizeFolder('/Music/Skip/') === '/Music/Skip', 'normalisation drops trailing slashes');
+
+ok(addExclusion([], skip).length === 1, 'a folder is added');
+ok(addExclusion([skip], skip).length === 1, 'adding the same folder twice changes nothing');
+ok(addExclusion([skip], nested).length === 1, 'a child of an excluded folder is redundant');
+ok(addExclusion([nested], skip).length === 1, 'a parent replaces the children it covers');
+ok(addExclusion([skip], skipper).length === 2, 'a distinct sibling is added separately');
+ok(removeExclusion([skip, skipper], skip).length === 1, 'removing drops exactly one entry');
+
+ok(folderLabel(skip) === 'Skip', 'the label is the last path segment');
+ok(folderPath(skip).includes('Music/Skip'), 'the path drops the scheme and authority');
+
+const copyArgs = transcodeArgs({ source: '/tmp/in.ogg', output: '/tmp/out.m4a' });
+ok(copyArgs.includes('aac') && copyArgs.includes('mp4'), 'the copy is AAC in an MP4 wrapper');
+ok(copyArgs.includes('-vn'), 'embedded artwork is not carried into the copy');
+ok(copyArgs[copyArgs.length - 1] === '/tmp/out.m4a', 'the output path is the last argument');
+ok(copyArgs[copyArgs.indexOf('-b:a') + 1] === '128k', 'the copy uses the default bitrate');
+ok(
+  transcodeArgs({ source: 'a', output: 'b', bitrateKbps: 192 }).includes('192k'),
+  'the bitrate can be overridden',
+);
 
 // --------------------------------------------------- loudness and silence
 

@@ -64,6 +64,10 @@ export default function RootLayout() {
             name="hidden"
             options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
           />
+          <Stack.Screen
+            name="excluded"
+            options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+          />
           <Stack.Screen name="track/[id]" options={{ animation: 'slide_from_right' }} />
           <Stack.Screen name="playlist/[id]" options={{ animation: 'slide_from_right' }} />
         </Stack>

@@ -10,7 +10,6 @@ import { TrackRow } from '../../components/TrackRow';
 import { formatDuration } from '../../lib/format';
 import { resolvePlaylist, useLibraryStore } from '../../store/library';
 import { usePlayerStore } from '../../store/player';
-import { openPlayer } from '../../store/playerSurface';
 import { font, palette, radius } from '../../theme';
 
 export default function PlaylistScreen() {
@@ -65,8 +64,7 @@ export default function PlaylistScreen() {
                 icon: 'play',
                 label: 'Play playlist',
                 onPress: () => {
-                  playTracks(tracks);
-                  openPlayer();
+                playTracks(tracks);
                 },
               }
             : undefined
@@ -96,7 +94,6 @@ export default function PlaylistScreen() {
               track={item}
               onPress={() => {
                 playTracks(tracks, index);
-                openPlayer();
               }}
               onLongPress={() => void removeFromPlaylist(playlist.id, item)}
               trailing={

@@ -6,6 +6,7 @@ import { usePlayerStore } from '../store/player';
 import { font, palette, radius } from '../theme';
 import type { Track } from '../types/track';
 import { Artwork } from './Artwork';
+import { PreparingChip } from './PreparingChip';
 import { Touch } from './Touch';
 import { openTrackMenu } from './TrackMenu';
 
@@ -20,6 +21,7 @@ export interface TrackRowProps {
 
 export function TrackRow({ track, onPress, onLongPress, trailing, subtitle }: TrackRowProps) {
   const current = usePlayerStore((state) => state.currentTrack?.id === track.id);
+  const preparing = usePlayerStore((state) => state.preparingId === track.id);
 
   return (
     <Touch
@@ -39,9 +41,12 @@ export function TrackRow({ track, onPress, onLongPress, trailing, subtitle }: Tr
           {subtitle ?? [track.artist, track.album].filter(Boolean).join(' · ')}
         </Text>
       </View>
-      {trailing ?? (
-        <Text style={styles.duration}>{formatDuration(track.duration)}</Text>
-      )}
+      {trailing ??
+        (preparing ? (
+          <PreparingChip />
+        ) : (
+          <Text style={styles.duration}>{formatDuration(track.duration)}</Text>
+        ))}
     </Touch>
   );
 }

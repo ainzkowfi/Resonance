@@ -2,6 +2,7 @@ import { Directory, File, FileMode, Paths } from 'expo-file-system';
 import { getAssetsAsync, requestPermissionsAsync, type Asset } from 'expo-media-library/legacy';
 
 import { fromBase64 } from '../lib/bytes';
+import { isExcluded } from '../lib/folderExclusions';
 import { stableId } from '../lib/format';
 import { parseFilename } from '../lib/id3';
 import {
@@ -83,6 +84,8 @@ export interface ScanOptions {
   signal?: AbortSignal;
   /** Folder tree to scan instead of MediaStore. */
   folder?: string;
+  /** Folders whose contents are skipped entirely, including subfolders. */
+  excluded?: readonly string[];
 }
 
 interface ScanEntry {
@@ -370,8 +373,14 @@ function sortTracks(tracks: Track[]): Track[] {
   );
 }
 
-async function collectEntries(folderUri: string, signal?: AbortSignal): Promise<ScanEntry[]> {
+async function collectEntries(
+  folderUri: string,
+  signal?: AbortSignal,
+  excluded: readonly string[] = [],
+): Promise<ScanEntry[]> {
   const entries: ScanEntry[] = [];
+  // Excluding the scanned folder itself leaves nothing to find.
+  if (isExcluded(folderUri, excluded)) return entries;
   const queue: { uri: string; depth: number }[] = [{ uri: folderUri, depth: 0 }];
   const visited = new Set<string>();
 
@@ -391,6 +400,8 @@ async function collectEntries(folderUri: string, signal?: AbortSignal): Promise<
 
     for (const item of listing) {
       if (item.isDirectory) {
+        // An excluded folder is never walked, so nothing inside it is parsed.
+        if (isExcluded(item.uri, excluded)) continue;
         if (next.depth < MAX_DEPTH) queue.push({ uri: item.uri, depth: next.depth + 1 });
         continue;
       }
@@ -422,7 +433,7 @@ async function parseEntries(entries: ScanEntry[], options: ScanOptions): Promise
 }
 
 export async function scanFolder(folderUri: string, options: ScanOptions = {}): Promise<Track[]> {
-  const entries = await collectEntries(folderUri, options.signal);
+  const entries = await collectEntries(folderUri, options.signal, options.excluded);
   return parseEntries(entries, options);
 }
 
@@ -434,8 +445,9 @@ export async function scanFolder(folderUri: string, options: ScanOptions = {}): 
 export async function syncFolder(
   folderUri: string,
   previous: Track[],
+  excluded: readonly string[] = [],
 ): Promise<Track[] | undefined> {
-  const entries = await collectEntries(folderUri);
+  const entries = await collectEntries(folderUri, undefined, excluded);
   const known = new Set(previous.map((track) => track.uri));
   const onDisk = new Set(entries.map((entry) => entry.uri));
   const kept = previous.filter((track) => onDisk.has(track.uri));

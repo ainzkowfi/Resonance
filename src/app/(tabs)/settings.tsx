@@ -36,6 +36,7 @@ export default function SettingsScreen() {
   const minDuration = useLibraryStore((state) => state.minDuration);
   const setMinDuration = useLibraryStore((state) => state.setMinDuration);
   const hiddenCount = useLibraryStore((state) => state.hidden.length);
+  const excludedCount = useLibraryStore((state) => state.excludedFolders.length);
   const folder = useLibraryStore((state) => state.folder);
   const scan = useLibraryStore((state) => state.scan);
   const issues = useDiagnosticsStore((state) => state.issues);
@@ -138,6 +139,16 @@ export default function SettingsScreen() {
             label="Hidden tracks"
             hint={hiddenCount === 0 ? 'Nothing hidden' : `${hiddenCount} hidden from the list`}
             onPress={() => router.push('/hidden')}
+          />
+          <Row
+            icon="remove-circle-outline"
+            label="Excluded folders"
+            hint={
+              excludedCount === 0
+                ? 'Folders a folder scan can skip'
+                : `${excludedCount} skipped when scanning`
+            }
+            onPress={() => router.push('/excluded')}
           />
           <InfoRow icon="list" label="Tracks in queue" value={String(queueLength)} />
         </Section>

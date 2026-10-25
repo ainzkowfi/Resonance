@@ -7,6 +7,7 @@ import { analyzeWav } from '../lib/wav';
 import { describeError, useDiagnosticsStore } from '../store/diagnostics';
 import { ffmpegLoadFailure, loadFFmpeg, type FFmpegModule } from './module';
 import { toPath } from './paths';
+import { stageReadableSource } from './source';
 
 /**
  * Per-track audio analysis, computed on device.
@@ -108,28 +109,6 @@ function cacheFile(trackId: string): File {
   return new File(directory(WAVEFORM_DIR), `${keyOf(trackId)}.json`);
 }
 
-function extensionOf(uri: string): string {
-  const match = /\.([a-z0-9]{1,5})(?:[?#]|$)/i.exec(uri);
-  return match ? `.${match[1].toLowerCase()}` : '';
-}
-
-/**
- * FFmpeg can only read real paths. Files picked through the system folder
- * picker are `content://` URIs, so those are staged into the cache first.
- */
-async function readableSource(
-  trackUri: string,
-  key: string,
-): Promise<{ path: string; cleanup?: File }> {
-  if (trackUri.startsWith('file://')) {
-    return { path: toPath(trackUri) };
-  }
-  const target = new File(directory(TEMP_DIR), `${key}${extensionOf(trackUri)}`);
-  if (target.exists) target.delete();
-  await new File(trackUri).copy(target);
-  return { path: toPath(target.uri), cleanup: target };
-}
-
 async function decodeToWav(module: FFmpegModule, sourcePath: string, wavPath: string): Promise<boolean> {
   await AsyncStorage.setItem(CRASH_KEY, String(Date.now())).catch(() => undefined);
 
@@ -187,7 +166,11 @@ async function generate(trackId: string, trackUri: string): Promise<TrackAnalysi
   let cleanup: File | undefined;
 
   try {
-    const source = await readableSource(trackUri, key);
+    const source = await stageReadableSource({
+      uri: trackUri,
+      key,
+      directory: directory(TEMP_DIR),
+    });
     cleanup = source.cleanup;
 
     if (wavFile.exists) wavFile.delete();

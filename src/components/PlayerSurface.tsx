@@ -39,6 +39,7 @@ import { Artwork } from './Artwork';
 import { PLAYER_BAR_HEIGHT } from './bottomBar';
 import { EqBars } from './EqBars';
 import { LyricsView } from './LyricsView';
+import { PlaybackNoticeLine } from './PlaybackNotice';
 import { ProgressBar, type ProgressBarProps } from './ProgressBar';
 import { Touch } from './Touch';
 
@@ -240,13 +241,14 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
   }));
 
   const miniStyle = useAnimatedStyle(() => {
+    // The dock slides out from behind the tab bar rather than fading in: its
+    // slot clips it, so it rises into view as `shown` springs to 1.
     const visible = shown.value;
     return {
-      opacity: visible * interpolate(expand.value, [0, 0.45], [1, 0], 'clamp'),
+      opacity: interpolate(expand.value, [0, 0.45], [1, 0], 'clamp'),
       transform: [
         {
-          translateY:
-            (1 - visible) * (PLAYER_BAR_HEIGHT + 24) + expand.value * 12,
+          translateY: (1 - visible) * (PLAYER_BAR_HEIGHT + 24) + expand.value * 12,
         },
       ],
     };
@@ -420,8 +422,10 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
               {track?.album ? ` · ${track.album}` : ''}
             </Text>
           </Touch>
-<Ionicons name="chevron-forward" size={18} color={palette.textFaint} />
+          <Ionicons name="chevron-forward" size={18} color={palette.textFaint} />
         </Animated.View>
+
+        <PlaybackNoticeLine style={styles.playerNotice} />
 
         <PlayerProgress simultaneousHandlers={collapsePan} />
 
@@ -477,80 +481,89 @@ export function PlayerSurface({ bottom = 0 }: { bottom?: number }) {
         </Animated.View>
       </GestureDetector>
 
-      <Animated.View
-        style={[styles.mini, { bottom }, miniStyle]}
+      <View
+        style={[styles.dockClip, { bottom }]}
         pointerEvents={!track || expanded ? 'none' : 'box-none'}
       >
-        <GestureDetector gesture={miniPan}>
-          <View style={styles.miniViewport}>
-            <FlatList
-              ref={carouselRef}
-              data={queue}
-              horizontal
-              pagingEnabled
-              bounces={false}
-              overScrollMode="never"
-              showsHorizontalScrollIndicator={false}
-              decelerationRate="fast"
-              scrollEnabled={queue.length > 1}
-              removeClippedSubviews={false}
-              style={styles.miniCarousel}
-              keyExtractor={(item, index) => `${item.id}-${index}`}
-              getItemLayout={(_, index) => ({
-                length: width,
-                offset: width * index,
-                index,
-              })}
-              initialScrollIndex={
-                queue.length > 0 ? Math.max(0, Math.min(queueIndex, queue.length - 1)) : undefined
-              }
-              extraData={`${queueIndex}:${track?.id ?? ''}:${isPlaying}`}
-              initialNumToRender={3}
-              maxToRenderPerBatch={3}
-              windowSize={3}
-              onMomentumScrollEnd={onCarouselEnd}
-              renderItem={({ item, index }) => {
-                const active = index === queueIndex && item.id === track?.id;
-                return (
-                  <View style={[styles.miniPage, { width }]}>
-                    <Animated.View style={miniArtStyle}>
-                      <Artwork uri={item.artwork} size={MINI_ART} borderRadius={radius.sm} />
-                    </Animated.View>
-                    <Touch
-                      style={styles.miniText}
-                      onPress={() => selectPage(index)}
-                      accessibilityLabel="Open player"
-                    >
-                      <Text numberOfLines={1} style={styles.miniTitle}>
-                        {item.title}
-                      </Text>
-                      <Text numberOfLines={1} style={styles.miniArtist}>
-                        {item.artist}
-                      </Text>
-                    </Touch>
-                    <View style={styles.miniActions}>
-                      <EqBars active={active && isPlaying} color={palette.accentAlt} height={16} />
+        <Animated.View style={[styles.mini, miniStyle]}>
+          <GestureDetector gesture={miniPan}>
+            <View style={styles.miniViewport}>
+              <FlatList
+                ref={carouselRef}
+                data={queue}
+                horizontal
+                pagingEnabled
+                bounces={false}
+                overScrollMode="never"
+                showsHorizontalScrollIndicator={false}
+                decelerationRate="fast"
+                scrollEnabled={queue.length > 1}
+                removeClippedSubviews={false}
+                style={styles.miniCarousel}
+                keyExtractor={(item, index) => `${item.id}-${index}`}
+                getItemLayout={(_, index) => ({
+                  length: width,
+                  offset: width * index,
+                  index,
+                })}
+                initialScrollIndex={
+                  queue.length > 0 ? Math.max(0, Math.min(queueIndex, queue.length - 1)) : undefined
+                }
+                extraData={`${queueIndex}:${track?.id ?? ''}:${isPlaying}`}
+                initialNumToRender={3}
+                maxToRenderPerBatch={3}
+                windowSize={3}
+                onMomentumScrollEnd={onCarouselEnd}
+                renderItem={({ item, index }) => {
+                  const active = index === queueIndex && item.id === track?.id;
+                  return (
+                    <View style={[styles.miniPage, { width }]}>
+                      <Animated.View style={miniArtStyle}>
+                        <Artwork uri={item.artwork} size={MINI_ART} borderRadius={radius.sm} />
+                      </Animated.View>
                       <Touch
-                        style={styles.miniAction}
-                        onPress={() => togglePage(index)}
-                        accessibilityLabel={active && isPlaying ? 'Pause' : 'Play'}
+                        style={styles.miniText}
+                        onPress={() => selectPage(index)}
+                        accessibilityLabel="Open player"
                       >
-                        <Ionicons
-                          name={active && isPlaying ? 'pause' : 'play'}
-                          size={24}
-                          color={palette.text}
-                          style={!active || !isPlaying ? styles.playIcon : undefined}
-                        />
+                        <Text numberOfLines={1} style={styles.miniTitle}>
+                          {item.title}
+                        </Text>
+                        <Text numberOfLines={1} style={styles.miniArtist}>
+                          {item.artist}
+                        </Text>
                       </Touch>
+                      <View style={styles.miniActions}>
+                        <EqBars active={active && isPlaying} color={palette.accentAlt} height={16} />
+                        <Touch
+                          style={styles.miniAction}
+                          onPress={() => togglePage(index)}
+                          accessibilityLabel={active && isPlaying ? 'Pause' : 'Play'}
+                        >
+                          <Ionicons
+                            name={active && isPlaying ? 'pause' : 'play'}
+                            size={24}
+                            color={palette.text}
+                            style={!active || !isPlaying ? styles.playIcon : undefined}
+                          />
+                        </Touch>
+                      </View>
                     </View>
-                  </View>
-                );
-              }}
-            />
-          </View>
-        </GestureDetector>
-        <MiniProgress />
-      </Animated.View>
+                  );
+                }}
+              />
+            </View>
+          </GestureDetector>
+          <MiniProgress />
+        </Animated.View>
+      </View>
+
+      <View
+        pointerEvents={!track || expanded ? 'none' : 'box-none'}
+        style={[styles.dockNotice, { bottom: bottom + PLAYER_BAR_HEIGHT + 10 }]}
+      >
+        <PlaybackNoticeLine />
+      </View>
 
       <GestureDetector gesture={artPan}>
         <Animated.View
@@ -710,6 +723,15 @@ const styles = StyleSheet.create({
   },
 
 
+  playerNotice: {
+    marginHorizontal: 24,
+    marginTop: 14,
+  },
+  dockNotice: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+  },
   meta: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -792,10 +814,22 @@ const styles = StyleSheet.create({
   lyricsPillTextOn: {
     color: palette.bgElevated,
   },
+  /**
+   * The dock's slot. Clipping here is what makes the player look like it slides
+   * up from behind the tab bar instead of fading in on top of it.
+   */
+  dockClip: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: PLAYER_BAR_HEIGHT,
+    overflow: 'hidden',
+  },
   mini: {
     position: 'absolute',
     left: 0,
     right: 0,
+    bottom: 0,
     height: PLAYER_BAR_HEIGHT,
     backgroundColor: palette.surface,
   },

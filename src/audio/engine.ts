@@ -31,6 +31,8 @@ export interface EngineStatus {
   didJustFinish: boolean;
   isLoaded: boolean;
   isBuffering: boolean;
+  /** Native playback error, when the platform reports one. */
+  error?: string | null;
 }
 
 type StatusListener = (status: EngineStatus) => void;
@@ -377,18 +379,69 @@ class AudioEngine {
     }
   }
 
+  /**
+   * Puts the track on the lock screen and in the media notification.
+   *
+   * The controls are limited to what a single player can honour. Skip forward
+   * and back seek within the track, which the platform does itself; next and
+   * previous only exist for a native playlist, so enabling them here would draw
+   * buttons that do nothing.
+   */
   updateLockScreenMetadata(track: Track): void {
     if (!this.player) return;
     try {
-      this.player.setActiveForLockScreen(true, {
-        title: track.title,
-        artist: track.artist,
-        albumTitle: track.album,
-        artworkUrl: track.artwork,
-      });
+      this.player.setActiveForLockScreen(
+        true,
+        {
+          title: track.title,
+          artist: track.artist,
+          albumTitle: track.album,
+          artworkUrl: track.artwork,
+        },
+        {
+          showSeekForward: true,
+          showSeekBackward: true,
+          seekForwardIntervalSeconds: 30,
+          seekBackwardIntervalSeconds: 15,
+          isLiveStream: false,
+        },
+      );
     } catch {
       // Web and some Android builds have no lock screen surface.
     }
+  }
+
+  /**
+   * Fades to silence, then pauses, leaving the position where it was.
+   *
+   * Used when playback has to yield to something else. The platform often cuts
+   * the audio before the app learns of it, so this is the clean version of that
+   * hand-off: where the player is still running — a transient focus change, or
+   * an Android build that only ducked — the stop is a ramp instead of a cut.
+   */
+  async fadeOutAndPause(durationMs = 220): Promise<void> {
+    const player = this.player;
+    if (!player) return;
+
+    // A crossfade in flight would leave the outgoing player at whatever volume
+    // it had reached, so it is released rather than just stopped.
+    this.releaseOutgoing();
+    const step = 40;
+    const total = Math.max(step, durationMs);
+    const started = Date.now();
+
+    for (;;) {
+      const progress = Math.min(1, (Date.now() - started) / total);
+      this.fadeGain = 1 - progress;
+      this.applyGain();
+      if (progress >= 1) break;
+      await new Promise((resolve) => setTimeout(resolve, step));
+    }
+
+    this.applyPlayState(false);
+    // Restored so the next play starts at the level the track is meant to have.
+    this.fadeGain = 1;
+    this.applyGain();
   }
 
   /** Leveling gain for the loaded track; multiplied with any active fade. */
@@ -439,6 +492,9 @@ class AudioEngine {
         didJustFinish: status.didJustFinish,
         isLoaded: status.isLoaded,
         isBuffering: status.isBuffering,
+        // A source the platform cannot decode often fails here rather than at
+        // `createAudioPlayer`, so this is the only signal for those files.
+        error: status.error ?? null,
       });
     });
   }

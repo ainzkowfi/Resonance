@@ -11,7 +11,6 @@ import { TrackRow } from '../../components/TrackRow';
 import { fuzzySearch } from '../../lib/fuzzy';
 import { useLibraryStore } from '../../store/library';
 import { usePlayerStore } from '../../store/player';
-import { openPlayer } from '../../store/playerSurface';
 import { font, HIT, palette, radius } from '../../theme';
 
 export default function SearchScreen() {
@@ -89,7 +88,6 @@ export default function SearchScreen() {
               track={item}
               onPress={() => {
                 playTracks(tracks, index);
-                openPlayer();
               }}
             />
           </Animated.View>

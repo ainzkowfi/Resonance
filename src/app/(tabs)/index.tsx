@@ -15,7 +15,6 @@ import { Touch } from '../../components/Touch';
 import { TrackRow } from '../../components/TrackRow';
 import { resolvePlaylist, useLibraryStore } from '../../store/library';
 import { usePlayerStore } from '../../store/player';
-import { openPlayer } from '../../store/playerSurface';
 import { font, HIT, palette, radius } from '../../theme';
 import type { Track } from '../../types/track';
 
@@ -145,7 +144,6 @@ export default function LibraryScreen() {
               label: 'Play everything',
               onPress: () => {
                 playTracks(sortedTracks);
-                openPlayer();
               },
             }
           : undefined
@@ -213,7 +211,6 @@ export default function LibraryScreen() {
                   track={item}
                   onPress={() => {
                     playTracks(sortedTracks, index);
-                    openPlayer();
                   }}
                 />
               </Animated.View>
@@ -240,7 +237,6 @@ export default function LibraryScreen() {
                   haptic="none"
                   onPress={() => {
                     playTracks(item.tracks);
-                    openPlayer();
                   }}
                 >
                   <Artwork uri={item.artwork} size={160} borderRadius={radius.md} />
@@ -270,7 +266,6 @@ export default function LibraryScreen() {
                   haptic="none"
                   onPress={() => {
                     playTracks(item.tracks);
-                    openPlayer();
                   }}
                 >
                   <Artwork uri={item.artwork} size={48} borderRadius={radius.pill} />

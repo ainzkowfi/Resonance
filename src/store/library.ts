@@ -2,7 +2,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { File } from 'expo-file-system';
 import { create } from 'zustand';
 
+import { prunePlaybackCopies } from '../ffmpeg/transcode';
 import { applyLibraryFilter, EMPTY_FILTER, type TrackOverrides } from '../lib/filter';
+import { addExclusion, removeExclusion } from '../lib/folderExclusions';
 import {
   groupAlbums,
   groupArtists,
@@ -45,6 +47,8 @@ interface LibraryPrefs {
   overrides: Record<string, TrackOverrides>;
   minDuration: number;
   playlists: Playlist[];
+  /** Folders left out of folder scans, including everything beneath them. */
+  excludedFolders: string[];
 }
 
 /**
@@ -63,10 +67,10 @@ export async function loadMusicFolder(): Promise<string | undefined> {
 async function loadPrefs(): Promise<LibraryPrefs> {
   try {
     const raw = await AsyncStorage.getItem(PREFS_KEY);
-    const empty = { ...EMPTY_FILTER, playlists: [] };
+    const empty = { ...EMPTY_FILTER, playlists: [], excludedFolders: [] };
     return raw ? { ...empty, ...(JSON.parse(raw) as Partial<LibraryPrefs>) } : empty;
   } catch {
-    return { ...EMPTY_FILTER, playlists: [] };
+    return { ...EMPTY_FILTER, playlists: [], excludedFolders: [] };
   }
 }
 
@@ -106,6 +110,10 @@ interface LibraryState extends LibraryPrefs {
   hydrate: () => Promise<void>;
   request: () => Promise<void>;
   pickFolder: () => Promise<void>;
+  /** Opens the folder picker and stops scanning that folder. */
+  pickExcludedFolder: () => Promise<void>;
+  /** Scans the excluded folder again after its exclusion is removed. */
+  includeFolderAgain: (uri: string) => Promise<void>;
   scan: () => Promise<void>;
   /** Re-reads the folder and applies only the files that appeared or left. */
   sync: () => Promise<void>;
@@ -141,6 +149,7 @@ function savePrefs(state: LibraryState): void {
     overrides: state.overrides,
     minDuration: state.minDuration,
     playlists: state.playlists,
+    excludedFolders: state.excludedFolders,
   };
   prefs = Promise.resolve(value);
   void AsyncStorage.setItem(PREFS_KEY, JSON.stringify(value)).catch(() => {});
@@ -168,6 +177,7 @@ export function resolvePlaylist(
 export const useLibraryStore = create<LibraryState>((set, get) => ({
   ...EMPTY_FILTER,
   playlists: [],
+  excludedFolders: [],
   permission: 'unknown',
   entries: [],
   tracks: [],
@@ -216,15 +226,34 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     await get().scan();
   },
 
+  pickExcludedFolder: async () => {
+    const folder = await pickMusicFolder();
+    if (!folder) return;
+    const excludedFolders = addExclusion(get().excludedFolders, folder);
+    if (excludedFolders.length === get().excludedFolders.length) return;
+    set({ excludedFolders });
+    savePrefs(get());
+    // Rescanning is what removes the tracks already listed from that folder.
+    await get().scan();
+  },
+
+  includeFolderAgain: async (uri) => {
+    set({ excludedFolders: removeExclusion(get().excludedFolders, uri) });
+    savePrefs(get());
+    await get().scan();
+  },
+
   scan: async () => {
     if (get().scanning) return;
     const folder = get().folder;
+    const excluded = get().excludedFolders;
     const loaded = await ensurePrefs();
     set({ scanning: true, error: undefined, progress: { done: 0, total: 0 }, ...loaded });
     try {
       let lastProgressAt = 0;
       const entries = await scanLocalLibrary({
         folder,
+        excluded,
         onProgress: (done, total) => {
           const now = Date.now();
           if (done === total || done === 1 || now - lastProgressAt >= 1000) {
@@ -247,6 +276,9 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
         permission: 'granted',
         cacheLoaded: true,
       });
+      // Converted playback copies are megabytes each; a rescan is the natural
+      // moment to drop the ones whose track is gone.
+      void prunePlaybackCopies(entries.map((track) => track.id));
     } catch (error) {
       set({
         scanning: false,
@@ -261,7 +293,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     if (!state.folder || state.scanning || syncing) return;
     syncing = true;
     try {
-      const next = await syncFolder(state.folder, state.entries);
+      const next = await syncFolder(state.folder, state.entries, state.excludedFolders);
       if (next) {
         await saveLibraryCache(state.folder, next);
         set(derive(next, state));

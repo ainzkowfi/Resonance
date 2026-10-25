@@ -1,15 +1,29 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
 import { create } from 'zustand';
 import { createJSONStorage, persist, type PersistStorage } from 'zustand/middleware';
 import { audioEngine } from '../audio/engine';
+import { playbackCopy, playbackCopyFile } from '../ffmpeg/transcode';
 import { loadAnalysis, type TrackAnalysis } from '../ffmpeg/waveform';
 import { crossfadeStart, normalizeCrossfade } from '../lib/crossfade';
 import { shuffleArray } from '../lib/format';
 import { sampleFromTiming } from '../lib/handoff';
+import { isExternalStop } from '../lib/interruption';
 import { targetFromSamples, trackGainDb, volumeForGain } from '../lib/leveling';
+import {
+  LOAD_WATCHDOG_MS,
+  stalledLoadFailure,
+  type LoadProgress,
+} from '../lib/loadWatchdog';
+import {
+  playbackPlatform,
+  shouldTranscode,
+  unsupportedReason,
+  type PlaybackNotice,
+} from '../lib/playbackSupport';
 import { shouldPreload } from '../lib/preload';
 import { leadSkip, tailOut } from '../lib/silence';
-import { useDiagnosticsStore } from './diagnostics';
+import { describeError, useDiagnosticsStore } from './diagnostics';
 import type { RepeatMode, Track } from '../types/track';
 
 /**
@@ -45,6 +59,10 @@ export interface PlayerState {
   silenceTail: number;
   /** Blend length between queued tracks, seconds. 0 turns crossfading off. */
   crossfade: number;
+  /** Why the current track would not play, or that it is being prepared. */
+  notice: PlaybackNotice | null;
+  /** Track whose playable copy is being produced, so its row can say so. */
+  preparingId: string | null;
 
   playTracks: (tracks: Track[], startIndex?: number) => void;
   toggle: () => void;
@@ -62,6 +80,7 @@ export interface PlayerState {
   setSkipSilence: (enabled: boolean) => void;
   setCrossfade: (seconds: number) => void;
   recordLevel: (trackId: string, rmsDb: number) => void;
+  dismissNotice: () => void;
   applyStatus: (status: {
     currentTime: number;
     duration: number;
@@ -69,6 +88,7 @@ export interface PlayerState {
     didJustFinish: boolean;
     isLoaded: boolean;
     isBuffering: boolean;
+    error?: string | null;
   }) => void;
 }
 
@@ -132,6 +152,8 @@ export const usePlayerStore = create<PlayerState>()(
       skipSilence: false,
       silenceTail: 0,
       crossfade: 0,
+      notice: null,
+      preparingId: null,
 
       playTracks: (tracks, startIndex = 0) => {
         if (tracks.length === 0) return;
@@ -147,6 +169,7 @@ export const usePlayerStore = create<PlayerState>()(
           resumePosition: 0,
           shuffle: false,
           originalQueue: [],
+          notice: null,
         });
         loadTrack(track, { autoplay: true });
       },
@@ -157,7 +180,11 @@ export const usePlayerStore = create<PlayerState>()(
         const next = !isPlaying;
         set({ isPlaying: next, resumePosition: get().position });
         if (next) audioEngine.play();
-        else audioEngine.pause();
+        else {
+          // A pause is deliberate: stop treating the load as stalled.
+          clearWatchdog();
+          audioEngine.pause();
+        }
       },
 
       next: () => {
@@ -187,6 +214,7 @@ export const usePlayerStore = create<PlayerState>()(
           duration: track.duration,
           resumePosition: 0,
           isPlaying: true,
+          notice: null,
         });
         loadTrack(track, { autoplay: true, crossfade: true });
       },
@@ -210,6 +238,7 @@ export const usePlayerStore = create<PlayerState>()(
             duration: track.duration,
             resumePosition: 0,
             isPlaying: true,
+            notice: null,
           });
           loadTrack(track, { autoplay: true });
         } else {
@@ -230,6 +259,7 @@ export const usePlayerStore = create<PlayerState>()(
           duration: track.duration,
           resumePosition: 0,
           isPlaying: true,
+          notice: null,
         });
         loadTrack(track, { autoplay: true });
       },
@@ -365,8 +395,50 @@ export const usePlayerStore = create<PlayerState>()(
         });
       },
 
+      dismissNotice: () => set({ notice: null }),
+
       applyStatus: (status) => {
         const state = get();
+
+        // Anything that proves the source opened stands the watchdog down.
+        loadProgress = {
+          loaded: status.isLoaded,
+          currentTime: status.currentTime,
+          playing: status.playing,
+          error: status.error ?? null,
+        };
+        if (status.isLoaded || status.playing || status.currentTime > 0) clearWatchdog();
+
+        // A source the platform cannot decode usually shows up here rather
+        // than as a thrown load, so a track that fails this way is reported,
+        // not left looking like a stopped player.
+        if (status.error && status.error !== lastPlaybackError) {
+          lastPlaybackError = status.error;
+          if (state.currentTrack) {
+            void recoverTrack(state.currentTrack, new Error(status.error), { autoplay: true });
+          }
+        }
+
+        // Neither platform reports an audio interruption to JavaScript, so a
+        // stop that nothing of ours asked for is the signal that something else
+        // took the audio: a call, a video, another player.
+        if (status.playing) {
+          if (playingSince === 0) playingSince = Date.now();
+        } else if (
+          isExternalStop({
+            expectedPlaying: state.isPlaying,
+            playing: status.playing,
+            isLoaded: status.isLoaded,
+            isBuffering: status.isBuffering,
+            didJustFinish: status.didJustFinish,
+            msSincePlaying: playingSince === 0 ? 0 : Date.now() - playingSince,
+          })
+        ) {
+          playingSince = 0;
+          void audioEngine.fadeOutAndPause();
+          noticeFor({ tone: 'info', message: 'Paused while another app played audio.' });
+        }
+
         if (status.didJustFinish) {
           state.next();
           return;
@@ -388,7 +460,7 @@ export const usePlayerStore = create<PlayerState>()(
           const upcoming = state.queue[(state.queueIndex + 1) % state.queue.length];
           if (upcoming && upcoming.id !== currentId) {
             preparedFor = currentId;
-            audioEngine.prepare(upcoming);
+            audioEngine.prepare({ ...upcoming, uri: playableUri(upcoming) });
           }
         }
         if (status.playing) {
@@ -477,6 +549,138 @@ function levelGainFor(track: Track, levels: Record<string, number>): number {
 /** The track whose successor has already been opened, if any. */
 let preparedFor: string | null = null;
 
+/** Tracks that have already been through one conversion attempt. */
+const convertedOnce = new Set<string>();
+/** Tracks whose copy is being produced right now. */
+const converting = new Set<string>();
+/** Last native error reported, so a repeating status does not retry forever. */
+let lastPlaybackError = '';
+/** Last failure already written to diagnostics, so one refusal logs once. */
+let lastReportedFailure = '';
+/** Timer for a load that has produced nothing yet. */
+let watchdog: ReturnType<typeof setTimeout> | null = null;
+/** What the latest engine status says about the current load. */
+let loadProgress: LoadProgress = { loaded: false, currentTime: 0, playing: false, error: null };
+/** When the current track first reported that it was actually playing. */
+let playingSince = 0;
+
+function clearWatchdog(): void {
+  if (watchdog) clearTimeout(watchdog);
+  watchdog = null;
+}
+
+/**
+ * Arms the silent-failure watch for a load that was asked to play.
+ *
+ * A source the platform cannot parse does not always reject or report an error
+ * — it can simply never load. Without this, that track would look paused
+ * forever, which is the exact symptom this whole path exists to remove.
+ */
+function armWatchdog(track: Track, options: { autoplay?: boolean; startAt?: number }): void {
+  clearWatchdog();
+  loadProgress = { loaded: false, currentTime: 0, playing: false, error: null };
+  watchdog = setTimeout(() => {
+    watchdog = null;
+    if (usePlayerStore.getState().currentTrack?.id !== track.id) return;
+    const reason = stalledLoadFailure(loadProgress);
+    if (!reason) return;
+    void recoverTrack(track, new Error(reason), options);
+  }, LOAD_WATCHDOG_MS);
+}
+
+function noticeFor(notice: PlaybackNotice | null): void {
+  usePlayerStore.setState({ notice });
+}
+
+/**
+ * The recovery path for a track the native player refused.
+ *
+ * Before this existed a refusal was invisible: the console got a warning and
+ * the player simply stopped. Now every failure leaves a diagnostics entry and a
+ * line in the player, and a format the platform cannot open gets one attempt at
+ * a converted copy before the track is given up on.
+ */
+async function recoverTrack(
+  track: Track,
+  error: unknown,
+  options: { autoplay?: boolean; startAt?: number },
+): Promise<void> {
+  const info = describeError(error);
+  const detail = [info.message, info.stack].filter(Boolean).join('\n');
+
+  // A load rejection and a status error can describe the same refusal; one
+  // entry is enough, and repeat reports from a stuck player are worse.
+  const failure = `${track.id}:${info.message}`;
+  if (failure !== lastReportedFailure) {
+    lastReportedFailure = failure;
+    useDiagnosticsStore.getState().addIssue('playback', `Could not play “${track.title}”.`, detail);
+  }
+
+  if (converting.has(track.id)) return;
+
+  const platform = playbackPlatform(Platform.OS);
+  const reason = unsupportedReason(track.uri, platform);
+
+  if (!shouldTranscode(track.uri, platform)) {
+    noticeFor({ tone: 'error', message: reason ?? `This track would not play: ${info.message}`, detail });
+    return;
+  }
+
+  if (convertedOnce.has(track.id)) {
+    noticeFor({ tone: 'error', message: 'The converted copy would not play either.', detail });
+    return;
+  }
+  convertedOnce.add(track.id);
+  converting.add(track.id);
+  usePlayerStore.setState({ preparingId: track.id });
+
+  try {
+    noticeFor({
+      tone: 'info',
+      message: `${reason ?? 'This format is not supported'} Making a playable copy…`,
+    });
+    const copy = await playbackCopy(track);
+
+    // The user may have moved on while the encode ran.
+    if (usePlayerStore.getState().currentTrack?.id !== track.id) return;
+
+    if (!copy.ok) {
+      useDiagnosticsStore
+        .getState()
+        .addIssue(
+          'playback',
+          `Could not convert “${track.title}” for playback.`,
+          [copy.message, copy.detail].filter(Boolean).join('\n'),
+        );
+      noticeFor({ tone: 'error', message: copy.message, detail: copy.detail });
+      return;
+    }
+
+    noticeFor({ tone: 'info', message: 'Playing a converted copy of this track.' });
+    loadTrack(track, options);
+  } finally {
+    converting.delete(track.id);
+    usePlayerStore.setState({ preparingId: null });
+  }
+}
+
+/**
+ * The URI to hand the native player for a track.
+ *
+ * A converted copy is used from then on, so replaying a track that iOS cannot
+ * open costs a file check rather than another encode — and returning to it
+ * later, or after a restart, is instant.
+ */
+function playableUri(track: Track): string {
+  if (!shouldTranscode(track.uri, playbackPlatform(Platform.OS))) return track.uri;
+  try {
+    const copy = playbackCopyFile(track.id);
+    return copy.exists ? copy.uri : track.uri;
+  } catch {
+    return track.uri;
+  }
+}
+
 /** Load through one place so a failed native load can never surface as an unhandled rejection. */
 function loadTrack(
   track: Track,
@@ -484,25 +688,32 @@ function loadTrack(
 ): void {
   const { crossfade = false, autoplay, startAt } = options;
   preparedFor = null;
+  lastPlaybackError = '';
+  playingSince = 0;
   const state = usePlayerStore.getState();
   const seconds = crossfade ? state.crossfade : 0;
   const gain = levelGainFor(track, state.levels);
+  // A copy produced by an earlier failure is what actually plays.
+  const source = { ...track, uri: playableUri(track) };
 
   let run: Promise<void>;
   if (seconds > 0) {
-    run = audioEngine.crossfadeTo(track, { autoplay, startAt, seconds, gain });
+    run = audioEngine.crossfadeTo(source, { autoplay, startAt, seconds, gain });
   } else {
     audioEngine.setLevelGain(gain);
-    run = audioEngine.load(track, { autoplay, startAt });
+    run = audioEngine.load(source, { autoplay, startAt });
   }
+
+  if (autoplay) armWatchdog(track, { autoplay, startAt });
 
   void run
     // Analysis is cosmetic: never let it surface as a failed load.
     .then(() => applyTrackAnalysis(track).catch(() => undefined))
-    .catch(() => {
+    .catch((error: unknown) => {
       if (usePlayerStore.getState().currentTrack?.id === track.id) {
         usePlayerStore.setState({ isPlaying: false });
       }
+      void recoverTrack(track, error, { autoplay, startAt });
     });
 }
 
