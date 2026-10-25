@@ -107,7 +107,7 @@ Sound Check, and the honest thing to document in the UI.
   −16 dBFS master, the jump at the track change is halved rather than removed,
   and no track clips.
 
-### P2 — Skip leading/trailing silence (~small)
+### P2 — Skip leading/trailing silence (shipped)
 
 - `lead` / `tail` come out of the same analysis: count leading/trailing bars
   below −45 dBFS, times the bar duration.
@@ -115,6 +115,10 @@ Sound Check, and the honest thing to document in the UI.
   the engine already accepts `startAt`.
 - Trailing: when `position > duration − tail`, advance, instead of silence.
 - Toggle in Settings, default off. Audiobooks and live rips are the audiences.
+- **As shipped:** only gaps of 2 s or more are skipped (shorter ones are part of
+  the music), a resume position past the intro is never undone, the track
+  already playing is not jumped when the toggle is switched on mid-song, and
+  both decisions are pure functions in `src/lib/silence.ts` with unit checks.
 - **Acceptance:** a track with 4 s of lead silence starts audibly at 0:00; a
   track with a clean ending advances without a gap of silence.
 

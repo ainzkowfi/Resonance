@@ -5,6 +5,7 @@ import { audioEngine } from '../audio/engine';
 import { loadAnalysis, type TrackAnalysis } from '../ffmpeg/waveform';
 import { shuffleArray } from '../lib/format';
 import { targetFromSamples, trackGainDb, volumeForGain } from '../lib/leveling';
+import { leadSkip, tailOut } from '../lib/silence';
 import type { RepeatMode, Track } from '../types/track';
 
 /**
@@ -34,6 +35,10 @@ export interface PlayerState {
   leveling: boolean;
   /** Measured loudness (dBFS) per track id, persisted so leveling is instant. */
   levels: Record<string, number>;
+  /** Skip excessive silence at the start and end of a track. */
+  skipSilence: boolean;
+  /** Trailing silence of the loaded track, seconds. Runtime-only. */
+  silenceTail: number;
 
   playTracks: (tracks: Track[], startIndex?: number) => void;
   toggle: () => void;
@@ -48,6 +53,7 @@ export interface PlayerState {
   moveInQueue: (from: number, to: number) => void;
   clearQueue: () => void;
   setLeveling: (enabled: boolean) => void;
+  setSkipSilence: (enabled: boolean) => void;
   recordLevel: (trackId: string, rmsDb: number) => void;
   applyStatus: (status: {
     currentTime: number;
@@ -71,6 +77,7 @@ interface PersistedPlayerState {
   isPlaying: boolean;
   leveling: boolean;
   levels: Record<string, number>;
+  skipSilence: boolean;
 }
 
 /** Median loudness only needs a representative sample, not every track ever. */
@@ -114,6 +121,8 @@ export const usePlayerStore = create<PlayerState>()(
       resumePosition: 0,
       leveling: false,
       levels: {},
+      skipSilence: false,
+      silenceTail: 0,
 
       playTracks: (tracks, startIndex = 0) => {
         if (tracks.length === 0) return;
@@ -149,6 +158,8 @@ export const usePlayerStore = create<PlayerState>()(
         if (repeat === 'one' && currentTrack) {
           set({ position: 0, resumePosition: 0, isPlaying: true });
           audioEngine.replay();
+          // A repeat is a fresh start, so the intro gap is skipped again.
+          void applyTrackAnalysis(currentTrack);
           return;
         }
 
@@ -321,8 +332,15 @@ export const usePlayerStore = create<PlayerState>()(
       setLeveling: (enabled) => {
         set({ leveling: enabled });
         const { currentTrack } = get();
-        if (currentTrack) void applyLeveling(currentTrack);
+        if (currentTrack) void applyTrackAnalysis(currentTrack, { seekLead: false });
         else audioEngine.setVolume(1);
+      },
+
+      setSkipSilence: (enabled) => {
+        set({ skipSilence: enabled, silenceTail: enabled ? get().silenceTail : 0 });
+        const { currentTrack } = get();
+        // Never jump the track that is already playing; only learn its outro.
+        if (enabled && currentTrack) void applyTrackAnalysis(currentTrack, { seekLead: false });
       },
 
       recordLevel: (trackId, rmsDb) => {
@@ -341,6 +359,14 @@ export const usePlayerStore = create<PlayerState>()(
         if (status.didJustFinish) {
           state.next();
           return;
+        }
+        if (state.skipSilence && status.playing) {
+          // Advance at the start of the outro instead of sitting in silence.
+          const out = tailOut(state.duration, state.silenceTail);
+          if (out > 0 && status.currentTime >= out) {
+            state.next();
+            return;
+          }
         }
         set({
           position: status.currentTime,
@@ -394,6 +420,7 @@ export const usePlayerStore = create<PlayerState>()(
         isPlaying: false,
         leveling: state.leveling,
         levels: state.levels,
+        skipSilence: state.skipSilence,
       }),
     },
   ),
@@ -403,8 +430,8 @@ export const usePlayerStore = create<PlayerState>()(
 function loadTrack(track: Track, options?: { autoplay?: boolean; startAt?: number }): void {
   void audioEngine
     .load(track, options)
-    // Leveling is cosmetic: never let it surface as a failed load.
-    .then(() => applyLeveling(track).catch(() => undefined))
+    // Analysis is cosmetic: never let it surface as a failed load.
+    .then(() => applyTrackAnalysis(track).catch(() => undefined))
     .catch(() => {
       if (usePlayerStore.getState().currentTrack?.id === track.id) {
         usePlayerStore.setState({ isPlaying: false });
@@ -413,23 +440,35 @@ function loadTrack(track: Track, options?: { autoplay?: boolean; startAt?: numbe
 }
 
 /** Guards against a slow analysis landing after the track changed again. */
-let levelingToken = 0;
+let analysisToken = 0;
 
 /**
- * Applies the leveling gain to the loaded player.
+ * Applies everything the per-track analysis feeds: leveling and silence
+ * skipping.
  *
  * Runs after the source is loaded, so a first-time decode never delays
- * playback. `player.volume` caps at 1, so the target is the library's median
- * loudness: louder tracks come down to it, quieter ones are left alone.
+ * playback. `player.volume` caps at 1, so the leveling target is the library's
+ * median loudness: louder tracks come down to it, quieter ones are left alone.
+ * `seekLead: false` learns the outro without moving the track that is already
+ * playing.
  */
-async function applyLeveling(track: Track): Promise<void> {
-  const token = ++levelingToken;
-  const state = usePlayerStore.getState();
+async function applyTrackAnalysis(
+  track: Track,
+  options: { seekLead?: boolean } = {},
+): Promise<void> {
+  const token = ++analysisToken;
+  const { seekLead = true } = options;
+  const initial = usePlayerStore.getState();
+  const wantLeveling = initial.leveling;
+  const wantSilence = initial.skipSilence;
 
-  if (!state.leveling || !track.uri) {
+  if (!track.uri || (!wantLeveling && !wantSilence)) {
     audioEngine.setVolume(1);
+    usePlayerStore.setState({ silenceTail: 0 });
     return;
   }
+
+  usePlayerStore.setState({ silenceTail: 0 });
 
   let analysis: TrackAnalysis | undefined;
   try {
@@ -437,15 +476,30 @@ async function applyLeveling(track: Track): Promise<void> {
   } catch {
     analysis = undefined;
   }
-  if (token !== levelingToken) return;
+  if (token !== analysisToken) return;
 
-  if (analysis && Number.isFinite(analysis.rmsDb)) {
-    state.recordLevel(track.id, analysis.rmsDb);
+  const current = usePlayerStore.getState();
+  if (current.currentTrack?.id !== track.id) return;
+
+  if (wantLeveling) {
+    if (analysis && Number.isFinite(analysis.rmsDb)) {
+      current.recordLevel(track.id, analysis.rmsDb);
+    }
+    const targetDb = targetFromSamples(Object.values(usePlayerStore.getState().levels));
+    const gainDb = trackGainDb({ rmsDb: analysis?.rmsDb, tagGainDb: track.gain, targetDb });
+    audioEngine.setVolume(volumeForGain(gainDb));
+  } else {
+    audioEngine.setVolume(1);
   }
 
-  const targetDb = targetFromSamples(Object.values(usePlayerStore.getState().levels));
-  const gainDb = trackGainDb({ rmsDb: analysis?.rmsDb, tagGainDb: track.gain, targetDb });
-  audioEngine.setVolume(volumeForGain(gainDb));
+  if (wantSilence && analysis) {
+    usePlayerStore.setState({ silenceTail: analysis.tail });
+    const start = leadSkip(analysis.lead, usePlayerStore.getState().position);
+    if (seekLead && start > 0) {
+      usePlayerStore.setState({ position: start, resumePosition: start });
+      void audioEngine.seek(start);
+    }
+  }
 }
 
 let didRestore = false;

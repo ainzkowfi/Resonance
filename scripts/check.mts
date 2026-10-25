@@ -17,6 +17,7 @@ import {
 } from '../src/lib/tags.ts';
 import { buildCapabilities, condenseListing, formatReport, listNames } from '../src/lib/ffmpegReport.ts';
 import { targetFromSamples, trackGainDb, volumeForGain } from '../src/lib/leveling.ts';
+import { leadSkip, tailOut } from '../src/lib/silence.ts';
 import { analyzeWav, peaksFromWav } from '../src/lib/wav.ts';
 
 let checks = 0;
@@ -651,5 +652,23 @@ ok(Math.abs(volumeForGain(-6) - 0.5012) < 0.001, 'a 6 dB cut halves the volume')
 ok(volumeForGain(-18) < 0.13, 'an 18 dB cut is quiet but audible');
 ok(volumeForGain(6) === 1, 'volume never exceeds full scale');
 ok(volumeForGain(Number.NaN) === 1, 'a broken gain leaves the volume alone');
+
+// ------------------------------------------------------------ silence skipping
+
+ok(leadSkip(4, 0) === 4, 'a long lead is skipped from the start');
+ok(leadSkip(4, 10) === 0, 'a resume past the lead is never undone');
+ok(leadSkip(4, 4) === 0, 'a position already at the lead does not skip again');
+ok(leadSkip(0.4, 0) === 0, 'short silence is part of the music');
+ok(leadSkip(undefined, 0) === 0, 'an unanalysed track is left alone');
+ok(leadSkip(Number.NaN, 0) === 0, 'a broken lead is ignored');
+ok(leadSkip(4, Number.NaN) === 0, 'an unknown position is left alone');
+ok(leadSkip(3, 0) === 3, 'the threshold is inclusive of 2 s and above');
+
+ok(tailOut(200, 5) === 195, 'a long outro is cut short');
+ok(tailOut(200, 1) === 0, 'a short outro plays out');
+ok(tailOut(5, 5) === 0, 'a track barely longer than its outro is left alone');
+ok(tailOut(Number.NaN, 5) === 0, 'an unknown duration never cuts the track');
+ok(tailOut(200, undefined) === 0, 'an unanalysed tail never cuts the track');
+ok(tailOut(200, 2) === 198, 'exactly 2 s of outro is skippable');
 
 console.log(`ok - ${checks} checks passed`);

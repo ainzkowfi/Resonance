@@ -39,6 +39,8 @@ export default function SettingsScreen() {
   const probe = useDiagnosticsStore((state) => state.probe);
   const leveling = usePlayerStore((state) => state.leveling);
   const setLeveling = usePlayerStore((state) => state.setLeveling);
+  const skipSilence = usePlayerStore((state) => state.skipSilence);
+  const setSkipSilence = usePlayerStore((state) => state.setSkipSilence);
   const levels = usePlayerStore((state) => state.levels);
   const measured = Object.keys(levels).length;
   const targetDb = useMemo(() => targetFromSamples(Object.values(levels)), [levels]);
@@ -119,6 +121,17 @@ export default function SettingsScreen() {
               full volume.
             </Text>
           ) : null}
+          <Row
+            icon="play-forward-outline"
+            label="Skip silence"
+            hint={
+              skipSilence
+                ? 'Long intros and outros are jumped instead of played out'
+                : 'Skips more than 2 seconds of silence at either end'
+            }
+            value={skipSilence}
+            onPress={() => void setSkipSilence(!skipSilence)}
+          />
         </Section>
 
         <Section title="Diagnostics">
