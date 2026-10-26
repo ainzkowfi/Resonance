@@ -5,9 +5,10 @@ import { createJSONStorage, persist, type PersistStorage } from 'zustand/middlew
 import { audioEngine } from '../audio/engine';
 import { loadAnalysis, type TrackAnalysis } from '../media/waveform';
 import { crossfadeStart, normalizeCrossfade } from '../lib/crossfade';
+import { sanitizeTracks } from '../lib/filter';
 import { shuffleArray } from '../lib/format';
 import { sampleFromTiming } from '../lib/handoff';
-import { isExternalStop } from '../lib/interruption';
+import { IDLE_WATCH, watchPlayback } from '../lib/interruption';
 import { targetFromSamples, trackGainDb, volumeForGain } from '../lib/leveling';
 import {
   LOAD_WATCHDOG_MS,
@@ -196,8 +197,11 @@ export const usePlayerStore = create<PlayerState>()(
 
         const isLast = queueIndex >= queue.length - 1;
         if (isLast && repeat !== 'all') {
-          set({ isPlaying: false, position: 0 });
+          // Nowhere left to go: rewind and pause, so play starts the track again
+          // rather than leaving the scrubber at zero with the audio at its end.
+          set({ isPlaying: false, position: 0, resumePosition: 0 });
           audioEngine.pause();
+          void audioEngine.seek(0);
           return;
         }
         const nextIndex = isLast ? 0 : queueIndex + 1;
@@ -416,20 +420,19 @@ export const usePlayerStore = create<PlayerState>()(
 
         // Neither platform reports an audio interruption to JavaScript, so a
         // stop that nothing of ours asked for is the signal that something else
-        // took the audio: a call, a video, another player.
-        if (status.playing) {
-          if (playingSince === 0) playingSince = Date.now();
-        } else if (
-          isExternalStop({
-            expectedPlaying: state.isPlaying,
-            playing: status.playing,
-            isLoaded: status.isLoaded,
-            isBuffering: status.isBuffering,
-            didJustFinish: status.didJustFinish,
-            msSincePlaying: playingSince === 0 ? 0 : Date.now() - playingSince,
-          })
-        ) {
-          playingSince = 0;
+        // took the audio: a call, a video, another player. The watch keeps this
+        // to a transition — the engine playing, then not playing — so the first
+        // status after a resume is not mistaken for an interruption.
+        const watched = watchPlayback(playbackWatch, {
+          expectedPlaying: state.isPlaying,
+          playing: status.playing,
+          isLoaded: status.isLoaded,
+          isBuffering: status.isBuffering,
+          didJustFinish: status.didJustFinish,
+          now: Date.now(),
+        });
+        playbackWatch = watched.watch;
+        if (watched.externalStop) {
           void audioEngine.fadeOutAndPause();
           noticeFor({ tone: 'info', message: 'Paused while another app played audio.' });
         }
@@ -510,6 +513,50 @@ export const usePlayerStore = create<PlayerState>()(
         if (version < 3) next = { ...next, repeat: 'all' };
         return next;
       },
+      /**
+       * The saved state, made safe before it reaches the player.
+       *
+       * A queue from an older build — or one whose write was cut short — is
+       * otherwise trusted field for field: a missing `title`, a `duration` that
+       * is a string, a `queueIndex` past the end. Every one of those is a crash
+       * or a player showing the wrong track, so the snapshot is rebuilt here
+       * instead of being spread over the defaults.
+       */
+      merge: (persisted, current) => {
+        const raw = (persisted ?? {}) as Partial<PersistedPlayerState>;
+        const queue = sanitizeTracks(raw.queue);
+        const lastIndex = Math.max(0, queue.length - 1);
+        const savedIndex =
+          typeof raw.queueIndex === 'number' && Number.isFinite(raw.queueIndex)
+            ? Math.trunc(raw.queueIndex)
+            : 0;
+        const queueIndex = queue.length > 0 ? Math.min(lastIndex, Math.max(0, savedIndex)) : 0;
+
+        const levels: Record<string, number> = {};
+        if (raw.levels && typeof raw.levels === 'object') {
+          for (const [id, value] of Object.entries(raw.levels)) {
+            if (typeof value === 'number' && Number.isFinite(value)) levels[id] = value;
+          }
+        }
+
+        const resume = raw.resumePosition;
+        return {
+          ...current,
+          queue,
+          queueIndex,
+          currentTrack: queue[queueIndex] ?? null,
+          originalQueue: sanitizeTracks(raw.originalQueue),
+          resumePosition:
+            typeof resume === 'number' && Number.isFinite(resume) && resume > 0 ? resume : 0,
+          shuffle: raw.shuffle === true,
+          repeat: raw.repeat === 'one' || raw.repeat === 'off' ? raw.repeat : 'all',
+          isPlaying: false,
+          leveling: raw.leveling === true,
+          levels,
+          skipSilence: raw.skipSilence === true,
+          crossfade: normalizeCrossfade(typeof raw.crossfade === 'number' ? raw.crossfade : 0),
+        };
+      },
       partialize: (state): PersistedPlayerState => ({
         queue: state.queue,
         queueIndex: state.queueIndex,
@@ -552,8 +599,8 @@ let lastReportedFailure = '';
 let watchdog: ReturnType<typeof setTimeout> | null = null;
 /** What the latest engine status says about the current load. */
 let loadProgress: LoadProgress = { loaded: false, currentTime: 0, playing: false, error: null };
-/** When the current track first reported that it was actually playing. */
-let playingSince = 0;
+/** The previous engine status, so an external stop is judged as a transition. */
+let playbackWatch = IDLE_WATCH;
 
 function clearWatchdog(): void {
   if (watchdog) clearTimeout(watchdog);
@@ -625,7 +672,7 @@ function loadTrack(
   const { crossfade = false, autoplay, startAt } = options;
   preparedFor = null;
   lastPlaybackError = '';
-  playingSince = 0;
+  playbackWatch = IDLE_WATCH;
   const state = usePlayerStore.getState();
   const seconds = crossfade ? state.crossfade : 0;
   const gain = levelGainFor(track, state.levels);

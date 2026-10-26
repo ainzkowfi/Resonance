@@ -2,7 +2,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { File } from 'expo-file-system';
 import { create } from 'zustand';
 
-import { applyLibraryFilter, EMPTY_FILTER, type TrackOverrides } from '../lib/filter';
+import {
+  applyLibraryFilter,
+  EMPTY_FILTER,
+  sanitizeTracks,
+  type TrackOverrides,
+} from '../lib/filter';
 import { addExclusion, removeExclusion } from '../lib/folderExclusions';
 import {
   groupAlbums,
@@ -63,13 +68,71 @@ export async function loadMusicFolder(): Promise<string | undefined> {
   }
 }
 
+const EMPTY_PREFS: LibraryPrefs = { ...EMPTY_FILTER, playlists: [], excludedFolders: [] };
+
+const stringList = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+
+/**
+ * Stored preferences, made safe to use.
+ *
+ * These are JSON written by a previous version of the app; a truncated write or
+ * an older field shape used to reach `applyLibraryFilter` as-is, where a null
+ * `overrides` was a TypeError that stopped the library from loading at all.
+ * Anything unreadable falls back to the default for that field rather than
+ * discarding the rest.
+ */
+function sanitizePrefs(value: unknown): LibraryPrefs {
+  if (!value || typeof value !== 'object') return { ...EMPTY_PREFS };
+  const raw = value as Record<string, unknown>;
+
+  const overrides: Record<string, TrackOverrides> = {};
+  if (raw.overrides && typeof raw.overrides === 'object' && !Array.isArray(raw.overrides)) {
+    for (const [uri, patch] of Object.entries(raw.overrides as Record<string, unknown>)) {
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch)) continue;
+      const source = patch as Record<string, unknown>;
+      const clean: TrackOverrides = {};
+      for (const key of ['title', 'artist', 'album'] as const) {
+        const field = source[key];
+        if (typeof field === 'string') clean[key] = field;
+      }
+      if (Object.keys(clean).length > 0) overrides[uri] = clean;
+    }
+  }
+
+  const playlists: Playlist[] = [];
+  if (Array.isArray(raw.playlists)) {
+    for (const entry of raw.playlists) {
+      if (!entry || typeof entry !== 'object') continue;
+      const playlist = entry as Record<string, unknown>;
+      if (typeof playlist.id !== 'string' || playlist.id.length === 0) continue;
+      playlists.push({
+        id: playlist.id,
+        name: typeof playlist.name === 'string' && playlist.name ? playlist.name : 'Playlist',
+        uris: stringList(playlist.uris),
+      });
+    }
+  }
+
+  const minDuration = raw.minDuration;
+  return {
+    hidden: stringList(raw.hidden),
+    overrides,
+    minDuration:
+      typeof minDuration === 'number' && Number.isFinite(minDuration) && minDuration > 0
+        ? minDuration
+        : 0,
+    playlists,
+    excludedFolders: stringList(raw.excludedFolders),
+  };
+}
+
 async function loadPrefs(): Promise<LibraryPrefs> {
   try {
     const raw = await AsyncStorage.getItem(PREFS_KEY);
-    const empty = { ...EMPTY_FILTER, playlists: [], excludedFolders: [] };
-    return raw ? { ...empty, ...(JSON.parse(raw) as Partial<LibraryPrefs>) } : empty;
+    return raw ? sanitizePrefs(JSON.parse(raw)) : { ...EMPTY_PREFS };
   } catch {
-    return { ...EMPTY_FILTER, playlists: [], excludedFolders: [] };
+    return { ...EMPTY_PREFS };
   }
 }
 
@@ -77,8 +140,12 @@ async function loadLibraryCache(scope: string): Promise<Track[] | undefined> {
   try {
     const raw = await AsyncStorage.getItem(LIBRARY_CACHE_KEY);
     if (!raw) return undefined;
-    const cached = JSON.parse(raw) as { scope?: string; tracks?: Track[] };
-    return cached.scope === scope && Array.isArray(cached.tracks) ? cached.tracks : undefined;
+    const cached = JSON.parse(raw) as { scope?: unknown; tracks?: unknown };
+    if (!cached || cached.scope !== scope) return undefined;
+    // A cache that parses but holds nothing usable is a miss, not an empty
+    // library: falling through to a scan is what repairs it.
+    const tracks = sanitizeTracks(cached.tracks);
+    return tracks.length > 0 || Array.isArray(cached.tracks) ? tracks : undefined;
   } catch {
     return undefined;
   }

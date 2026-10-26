@@ -13,7 +13,9 @@ import { usePlayerStore } from '../../store/player';
 import { font, palette, radius } from '../../theme';
 
 export default function PlaylistScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const params = useLocalSearchParams<{ id: string }>();
+  // A repeated param arrives as an array; the track screen unwraps it too.
+  const id = Array.isArray(params.id) ? params.id[0] : params.id;
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const entries = useLibraryStore((state) => state.entries);

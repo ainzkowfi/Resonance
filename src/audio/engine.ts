@@ -120,6 +120,9 @@ class AudioEngine {
     }
 
     if (this.loadedId === track.id && this.player) {
+      // Re-opening the track that is already loaded must still honour a start
+      // position; otherwise a resume lands wherever the player happens to be.
+      if (options.startAt && options.startAt > 0) void this.seek(options.startAt);
       this.applyPlayState(Boolean(options.autoplay));
       return;
     }
@@ -479,9 +482,12 @@ class AudioEngine {
           preloaded: handoff.preloaded,
         });
       }
-      if (status.didJustFinish && !this.handledFinish) {
-        this.handledFinish = true;
-      }
+      // Edge-triggered on purpose. A finished player keeps reporting
+      // `didJustFinish` on every status tick, and the queue reads that flag as
+      // "advance" — four times a second. On the last track with repeat off that
+      // became a play/pause loop the user could not get out of.
+      const justFinished = Boolean(status.didJustFinish) && !this.handledFinish;
+      if (justFinished) this.handledFinish = true;
       this.isLoaded = status.isLoaded;
       this.isBuffering = status.isBuffering;
       if (this.isLoaded && !this.isBuffering) void this.flushSeek();
@@ -489,7 +495,7 @@ class AudioEngine {
         currentTime: status.currentTime ?? 0,
         duration: status.duration ?? 0,
         playing: status.playing,
-        didJustFinish: status.didJustFinish,
+        didJustFinish: justFinished,
         isLoaded: status.isLoaded,
         isBuffering: status.isBuffering,
         // A source the platform cannot decode often fails here rather than at
@@ -582,6 +588,9 @@ class AudioEngine {
     this.seeking = true;
     try {
       await player.seekTo(target);
+      // A seek re-arms the end of the track: repeat-one loops again, and a
+      // track seeked back is allowed to advance when it reaches the end.
+      this.handledFinish = false;
     } catch {
       // ignore
     } finally {
@@ -592,6 +601,9 @@ class AudioEngine {
 
   replay(): void {
     if (!this.player) return;
+    // Re-armed even when the seek is deferred: a pending seek is applied on the
+    // next loaded status, and the finish flag has to be clear by then.
+    this.handledFinish = false;
     void this.seek(0);
     this.play();
   }

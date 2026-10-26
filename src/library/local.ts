@@ -55,6 +55,15 @@ const MAX_COVER_BYTES = 3 * 1024 * 1024;
 const MAX_FILES = 6000;
 const MAX_DEPTH = 8;
 const PAGE_SIZE = 200;
+/**
+ * Ceiling for the no-seek fallback, where the whole file has to be read.
+ *
+ * `FileHandle` is how a tag window stays small, but a provider that refuses
+ * random access leaves only `bytes()` — which allocates the entire track in JS
+ * memory. A folder of FLACs read that way is an out-of-memory crash, so past
+ * this size the read is abandoned instead. The track still lists, by filename.
+ */
+const MAX_FALLBACK_BYTES = 8 * 1024 * 1024;
 
 export type PermissionState = 'granted' | 'denied' | 'undetermined' | 'unsupported';
 
@@ -136,7 +145,11 @@ async function readHead(uri: string, maxBytes: number): Promise<ByteWindow | und
     handle?.close();
   }
   try {
-    const all = await new File(uri).bytes();
+    const file = new File(uri);
+    const size = file.exists ? (file.size ?? 0) : 0;
+    if (size > MAX_FALLBACK_BYTES) return undefined;
+    const all = await file.bytes();
+    if (all.length > MAX_FALLBACK_BYTES) return undefined;
     return { data: all.length > maxBytes ? all.subarray(0, maxBytes) : all, size: all.length };
   } catch {
     return undefined;
@@ -158,7 +171,11 @@ async function readTail(uri: string, maxBytes: number): Promise<Uint8Array | und
     }
   } catch {
     try {
-      const all = await new File(uri).bytes();
+      const file = new File(uri);
+      const size = file.exists ? (file.size ?? 0) : 0;
+      if (size > MAX_FALLBACK_BYTES) return undefined;
+      const all = await file.bytes();
+      if (all.length > MAX_FALLBACK_BYTES) return undefined;
       return all.length > maxBytes ? all.subarray(all.length - maxBytes) : all;
     } catch {
       return undefined;
@@ -324,6 +341,19 @@ function toLyrics(text?: string): Lyrics | undefined {
     : { plain: value, source: 'local' };
 }
 
+/**
+ * A length the library filter can compare.
+ *
+ * MediaStore reports durations it does not always know. `Math.round(NaN)` is
+ * NaN, and NaN fails `duration >= 0` — so one missing duration removed the
+ * track from the list at every short-track setting, including "off". An unknown
+ * length is 0 here: it sorts and displays as unknown, and stays visible.
+ */
+function wholeSeconds(value: number | undefined): number {
+  if (value == null || !Number.isFinite(value) || value <= 0) return 0;
+  return Math.round(value);
+}
+
 async function buildTrack(entry: ScanEntry): Promise<Track | undefined> {
   const parsed = await readTrackFile(entry.uri);
   const fromName = parseFilename(entry.name);
@@ -342,7 +372,7 @@ async function buildTrack(entry: ScanEntry): Promise<Track | undefined> {
     album: tags.album,
     albumArtist: tags.albumArtist,
     artwork,
-    duration: Math.round(entry.knownDuration ?? parsed.duration ?? 0),
+    duration: wholeSeconds(entry.knownDuration ?? parsed.duration),
     genre: tags.genre,
     composer: tags.composer,
     conductor: tags.conductor,
@@ -478,15 +508,31 @@ function probeSidecar(audioUri: string): string | undefined {
 
 export async function scanMediaStore(options: ScanOptions = {}): Promise<Track[]> {
   const assets: Asset[] = [];
+  const seen = new Set<string>();
   let cursor: string | undefined;
-  for (;;) {
-    const page = await getAssetsAsync({ mediaType: 'audio', first: PAGE_SIZE, after: cursor });
-    assets.push(...page.assets);
-    if (!page.hasNextPage) break;
-    cursor = page.endCursor;
+
+  try {
+    for (;;) {
+      const page = await getAssetsAsync({ mediaType: 'audio', first: PAGE_SIZE, after: cursor });
+      for (const asset of page.assets) {
+        // Pages can overlap; an asset is only worth reading once.
+        if (seen.has(asset.id)) continue;
+        seen.add(asset.id);
+        assets.push(asset);
+      }
+      if (!page.hasNextPage || assets.length >= MAX_FILES) break;
+      // A provider that repeats its cursor would otherwise page forever,
+      // growing this array until the process runs out of memory.
+      const next = page.endCursor;
+      if (!next || next === cursor) break;
+      cursor = next;
+    }
+  } catch (error) {
+    // Half a library is better than a screen that never leaves "Scanning…".
+    if (assets.length === 0) throw error;
   }
 
-  const entries: ScanEntry[] = assets.map((asset) => ({
+  const entries: ScanEntry[] = assets.slice(0, MAX_FILES).map((asset) => ({
     uri: asset.uri,
     name: asset.filename ?? basename(asset.uri),
     lyricsUri: probeSidecar(asset.uri),

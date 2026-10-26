@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 
-import { applyLibraryFilter, EMPTY_FILTER } from '../src/lib/filter.ts';
+import { applyLibraryFilter, EMPTY_FILTER, sanitizeTracks } from '../src/lib/filter.ts';
+import {
+  formatCheckReport,
+  statusMeta,
+  summarizeChecks,
+  type FeatureCheck,
+} from '../src/lib/featureChecks.ts';
 import { fuzzyScore, fuzzySearch } from '../src/lib/fuzzy.ts';
 import { parseId3, parseId3v1, parseFilename } from '../src/lib/id3.ts';
 import { activeLineIndex, parseLrc, parsePlainLyrics } from '../src/lib/lrc.ts';
@@ -38,7 +44,12 @@ import {
   normalizeFolder,
   removeExclusion,
 } from '../src/lib/folderExclusions.ts';
-import { INTERRUPTION_GRACE_MS, isExternalStop } from '../src/lib/interruption.ts';
+import {
+  IDLE_WATCH,
+  INTERRUPTION_GRACE_MS,
+  isExternalStop,
+  watchPlayback,
+} from '../src/lib/interruption.ts';
 import { LOAD_WATCHDOG_MS, stalledLoadFailure } from '../src/lib/loadWatchdog.ts';
 import { targetFromSamples, trackGainDb, volumeForGain } from '../src/lib/leveling.ts';
 import { leadSkip, tailOut } from '../src/lib/silence.ts';
@@ -1067,5 +1078,150 @@ ok(
   ])?.cold?.medianMs === coldSample.totalMs + 400,
   'each group carries its own median',
 );
+
+// ------------------------------------------------------------ playback watch
+
+const playingStatus = {
+  playing: true,
+  isLoaded: true,
+  isBuffering: false,
+  didJustFinish: false,
+  expectedPlaying: true,
+};
+const stoppedStatus = { ...playingStatus, playing: false, expectedPlaying: false };
+
+const started = watchPlayback(IDLE_WATCH, { ...playingStatus, now: 1_000 });
+ok(started.watch.enginePlaying, 'playing starts the watch');
+ok(started.watch.since === 1_000, 'the streak starts when playback does');
+ok(!started.externalStop, 'starting to play is not an interruption');
+
+const continuous = watchPlayback(started.watch, { ...playingStatus, now: 5_000 });
+ok(continuous.watch.since === 1_000, 'a continuous stretch keeps its start time');
+
+const pausedByUser = watchPlayback(continuous.watch, { ...stoppedStatus, now: 5_100 });
+ok(!pausedByUser.externalStop, 'an app-requested pause is not an interruption');
+ok(!pausedByUser.watch.enginePlaying, 'a pause ends the streak');
+
+// The regression: the first status after play() still says playing:false.
+const resuming = watchPlayback(pausedByUser.watch, {
+  ...playingStatus,
+  playing: false,
+  expectedPlaying: true,
+  now: 6_000,
+});
+ok(!resuming.externalStop, 'the status right after a resume is not an interruption');
+
+const resumed = watchPlayback(resuming.watch, { ...playingStatus, now: 6_100 });
+ok(!resumed.externalStop, 'resumed playback is not an interruption');
+ok(resumed.watch.since === 6_100, 'resuming restarts the streak at the new play');
+
+const interrupted = watchPlayback(resumed.watch, {
+  ...playingStatus,
+  playing: false,
+  now: 10_500,
+});
+ok(interrupted.externalStop, 'a stop nothing asked for is still an interruption');
+
+const neverPlayed = watchPlayback(IDLE_WATCH, {
+  ...playingStatus,
+  playing: false,
+  now: 9_000,
+});
+ok(!neverPlayed.externalStop, 'a track that never played cannot be interrupted');
+
+const buffering = watchPlayback(resumed.watch, {
+  ...playingStatus,
+  playing: false,
+  isBuffering: true,
+  now: 8_000,
+});
+ok(!buffering.externalStop, 'buffering is not an interruption');
+ok(!buffering.watch.enginePlaying, 'buffering ends the streak');
+
+// ------------------------------------------------------------ stored records
+
+const dirty = sanitizeTracks([
+  { id: 'a', uri: 'a.mp3' },
+  null,
+  5,
+  'text',
+  { id: 'b' },
+  { uri: 'no-id.mp3' },
+  { id: 'd', uri: 'd.mp3', artist: 'Real Artist', title: 'Real', duration: '30' },
+]);
+ok(dirty.length === 2, `expected two usable records, got ${dirty.length}`);
+ok(dirty[0].id === 'a' && dirty[0].uri === 'a.mp3', 'a usable record keeps its id and uri');
+ok(dirty[0].artist === 'Unknown Artist', 'a missing artist gets a fallback');
+ok(dirty[0].title === 'a.mp3', 'a missing title falls back to the uri');
+ok(dirty[0].duration === 0, 'a missing duration becomes zero');
+ok(dirty[1].artist === 'Real Artist', 'a real artist is kept');
+ok(dirty[1].duration === 0, 'a duration that is not a number becomes zero');
+ok(dirty[1].source === 'local', 'the source is always local');
+ok(sanitizeTracks(null).length === 0, 'null is not a library');
+ok(sanitizeTracks({ id: 'a', uri: 'a' }).length === 0, 'a non-array is not a library');
+ok(sanitizeTracks([]).length === 0, 'an empty library stays empty');
+
+const malformedFilter = {
+  hidden: [],
+  minDuration: Number.NaN,
+  overrides: null,
+} as unknown as Parameters<typeof applyLibraryFilter>[1];
+ok(
+  applyLibraryFilter(scanned, malformedFilter).length === 3,
+  'a broken min duration and missing overrides do not filter the library out',
+);
+const noOverrides = { hidden: [], minDuration: 0 } as unknown as Parameters<
+  typeof applyLibraryFilter
+>[1];
+ok(applyLibraryFilter(scanned, noOverrides).length === 3, 'a missing overrides map does not throw');
+
+// ---------------------------------------------------------- feature checklist
+
+const checkResults: FeatureCheck[] = [
+  { id: 'a', label: 'Saved settings', intent: '', status: 'pass', note: 'ok', ms: 1 },
+  {
+    id: 'b',
+    label: 'FFmpeg module',
+    intent: '',
+    status: 'fail',
+    note: 'not in this build',
+    detail: 'Import failed',
+    ms: 2,
+  },
+  { id: 'c', label: 'Playback', intent: '', status: 'skip', note: 'nothing played', ms: 0 },
+  { id: 'd', label: 'AAC export', intent: '', status: 'pass', note: 'wrote 16 KB', ms: 5 },
+];
+
+const summary = summarizeChecks(checkResults);
+ok(summary.total === 4, `expected 4 checks, got ${summary.total}`);
+ok(summary.passed === 2 && summary.failed === 1 && summary.skipped === 1, 'statuses are counted');
+ok(!summary.ok, 'a failure makes the run not ok');
+ok(
+  summary.label === '2 passed · 1 failed · 1 skipped of 4',
+  `unexpected summary label "${summary.label}"`,
+);
+ok(summarizeChecks([]).label === 'Not run yet', 'an unrun checklist says so');
+ok(!summarizeChecks([]).ok, 'an unrun checklist is not a pass');
+ok(
+  summarizeChecks(checkResults.filter((check) => check.status !== 'fail')).ok,
+  'skips do not fail the run',
+);
+
+const checkReport = formatCheckReport(checkResults, {
+  version: '1.0.0',
+  device: 'android 34',
+  at: 1_700_000_000_000,
+});
+ok(checkReport.includes('Resonance feature check'), 'the report has a title');
+ok(checkReport.includes('Version: 1.0.0'), 'the report carries the version');
+ok(checkReport.includes('Device: android 34'), 'the report carries the device');
+ok(checkReport.includes('Result: 2 passed · 1 failed · 1 skipped of 4'), 'the report summarises');
+ok(checkReport.includes('[FAIL] FFmpeg module — not in this build'), 'failures are marked');
+ok(checkReport.includes('Import failed'), 'failure detail is included');
+ok(!checkReport.includes('probe.bin'), 'nothing invented appears in the report');
+
+ok(statusMeta('pass').icon === 'checkmark-circle', 'a pass has a check icon');
+ok(statusMeta('fail').tone === 'bad', 'a failure is marked bad');
+ok(statusMeta('skip').tone === 'muted', 'a skip is muted');
 
 console.log(`ok - ${checks} checks passed`);

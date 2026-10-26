@@ -15,6 +15,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BOTTOM_BAR_SPACE } from '../../components/bottomBar';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { Touch } from '../../components/Touch';
+import { FEATURE_CHECK_COUNT, runFeatureChecks } from '../../lib/featureAudit';
+import {
+  formatCheckReport,
+  statusMeta,
+  summarizeChecks,
+  type FeatureCheck,
+} from '../../lib/featureChecks';
 import { runCapabilityProbe } from '../../media/probe';
 import { getModuleInfo } from '../../media/waveform';
 import { MAX_CROSSFADE_SECONDS } from '../../lib/crossfade';
@@ -70,6 +77,48 @@ export default function SettingsScreen() {
   const targetDb = useMemo(() => targetFromSamples(Object.values(levels)), [levels]);
   const [probing, setProbing] = useState(false);
   const [codec, setCodec] = useState('Checking…');
+  const [checks, setChecks] = useState<FeatureCheck[]>([]);
+  const [checkRun, setCheckRun] = useState<{ done: number; total: number; current: string } | null>(
+    null,
+  );
+  const [checkAt, setCheckAt] = useState<number | undefined>(undefined);
+  const checkSummary = useMemo(
+    () => (checks.length > 0 ? summarizeChecks(checks) : null),
+    [checks],
+  );
+  const checkReport = useMemo(
+    () =>
+      checks.length > 0
+        ? formatCheckReport(checks, {
+            version: Constants.expoConfig?.version,
+            device: `${Platform.OS} ${String(Platform.Version)}`,
+            at: checkAt,
+          })
+        : '',
+    [checkAt, checks],
+  );
+  const checkPercent = checkRun
+    ? Math.round((checkRun.done / Math.max(1, checkRun.total)) * 100)
+    : 0;
+
+  const runChecks = () => {
+    if (checkRun) return;
+    setChecks([]);
+    setCheckAt(Date.now());
+    setCheckRun({ done: 0, total: FEATURE_CHECK_COUNT, current: 'Starting…' });
+    void runFeatureChecks({
+      onBefore: (label) => setCheckRun((prev) => (prev ? { ...prev, current: label } : prev)),
+      onResult: (check) => {
+        setChecks((prev) => [...prev, check]);
+        setCheckRun((prev) =>
+          prev ? { ...prev, done: prev.done + 1, current: check.label } : prev,
+        );
+      },
+    })
+      .then((results) => setChecks(results))
+      .catch(() => undefined)
+      .finally(() => setCheckRun(null));
+  };
 
   useEffect(() => {
     let active = true;
@@ -228,6 +277,68 @@ export default function SettingsScreen() {
             step={1}
             onChange={setCrossfade}
           />
+        </Section>
+
+        <Section title="Self-test">
+          <Row
+            icon="checkmark-done-outline"
+            label={checkRun ? `Checking ${checkRun.done} of ${checkRun.total}` : 'Run feature check'}
+            hint={
+              checkRun
+                ? checkRun.current
+                : checkSummary
+                  ? checkSummary.label
+                  : `Tests ${FEATURE_CHECK_COUNT} features: storage, tags, lyrics, codecs, library and playback`
+            }
+            onPress={runChecks}
+          />
+          {checkRun ? (
+            <View style={styles.runBar}>
+              <View style={[styles.runFill, { width: `${checkPercent}%` }]} />
+            </View>
+          ) : null}
+          {checks.length > 0 ? (
+            <View style={styles.logBlock}>
+              {checks.map((check) => {
+                const meta = statusMeta(check.status);
+                return (
+                  <View key={check.id} style={styles.capRow}>
+                    <Ionicons
+                      name={meta.icon as keyof typeof Ionicons.glyphMap}
+                      size={15}
+                      color={
+                        meta.tone === 'good'
+                          ? palette.accentAlt
+                          : meta.tone === 'bad'
+                            ? palette.danger
+                            : palette.textFaint
+                      }
+                    />
+                    <View style={styles.capText}>
+                      <Text style={styles.capLabel}>{check.label}</Text>
+                      <Text style={styles.capNote} numberOfLines={2}>
+                        {check.note}
+                      </Text>
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+          ) : null}
+          {checks.length > 0 ? (
+            <Row
+              icon="share-outline"
+              label="Share check report"
+              hint={checkSummary?.label ?? 'Every check, with its result'}
+              onPress={() => void Share.share({ message: checkReport })}
+            />
+          ) : null}
+          {checks.length > 0 ? (
+            <Text style={styles.note}>
+              Each line runs the same code the app uses for that feature, so a failure names the part
+              that is broken. Failures are also added to the error log below.
+            </Text>
+          ) : null}
         </Section>
 
         <Section title="Diagnostics">

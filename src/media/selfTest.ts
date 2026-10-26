@@ -1,17 +1,19 @@
 import { Directory, File, Paths } from 'expo-file-system';
 
 import { evaluateDecodeCheck, selfTestWav, type DecodeCheckResult } from '../lib/decodeCheck';
+import { analyzeWav } from '../lib/wav';
 import { describeError } from '../store/diagnostics';
 import { loadNativeAudio } from './module';
 import { toPath } from './paths';
 
 /**
- * Proves the native module can actually decode.
+ * Proves the native module can actually decode, all the way to peaks.
  *
  * The decoder listing says which codecs exist; this writes a second of known
- * audio as WAV, runs the exact native job the analysis pipeline uses, and
- * checks what landed on disk. A pass is evidence for the waveform / leveling /
- * silence pipeline, not just for the codec inventory.
+ * audio as WAV, runs the exact native job the analysis pipeline uses, and then
+ * reads the samples back the way `waveform.ts` does. A pass is evidence for the
+ * waveform / leveling / silence pipeline, not just for the codec inventory — a
+ * decode that writes a file the analyser cannot read would otherwise pass.
  *
  * Nothing touches the library: both files live in the cache directory and are
  * deleted before returning, whatever the outcome.
@@ -20,7 +22,12 @@ import { toPath } from './paths';
 export interface SelfTestReport extends DecodeCheckResult {
   /** Why the self-test could not run, when it reached that point. */
   detail?: string;
+  /** Waveform columns the decoded audio produced; 0 when there were none. */
+  peaks: number;
 }
+
+/** Columns asked for: enough to prove the peaks are real data. */
+const SELF_TEST_BARS = 32;
 
 const FOLDER = 'codec-probe';
 /** A one-second decode is quick; anything near this is a hung codec. */
@@ -68,7 +75,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 export async function runDecodeSelfTest(): Promise<SelfTestReport> {
   const module = await loadNativeAudio();
   if (!module) {
-    return { ok: false, message: 'The native audio module is missing', bytes: 0, ms: 0 };
+    return { ok: false, message: 'The native audio module is missing', bytes: 0, ms: 0, peaks: 0 };
   }
 
   const folder = probeFolder();
@@ -85,7 +92,23 @@ export async function runDecodeSelfTest(): Promise<SelfTestReport> {
       TIMEOUT_MS,
     );
 
-    return evaluateDecodeCheck({ bytes: sizeOf(output), ms: Date.now() - startedAt });
+    const verdict = evaluateDecodeCheck({ bytes: sizeOf(output), ms: Date.now() - startedAt });
+    if (!verdict.ok) return { ...verdict, peaks: 0 };
+
+    // The part a byte count cannot answer: are those bytes samples the analyser
+    // can use?
+    const bytes = await output.bytes();
+    const analysis = analyzeWav(bytes, { barCount: SELF_TEST_BARS, sampleRate: 8_000 });
+    if (!analysis) {
+      return {
+        ...verdict,
+        ok: false,
+        message: 'The decoded file held no usable samples',
+        peaks: 0,
+      };
+    }
+
+    return { ...verdict, peaks: analysis.peaks.length };
   } catch (error) {
     const info = describeError(error);
     return {
@@ -93,6 +116,7 @@ export async function runDecodeSelfTest(): Promise<SelfTestReport> {
       message: 'The decode self-test could not run',
       bytes: 0,
       ms: Date.now() - startedAt,
+      peaks: 0,
       detail: [info.message, info.stack].filter(Boolean).join('\n'),
     };
   } finally {
