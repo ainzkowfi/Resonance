@@ -484,7 +484,7 @@ export const usePlayerStore = create<PlayerState>()(
     {
       name: 'resonance-player',
       storage: createDedupedStorage<PersistedPlayerState>(),
-      version: 3,
+      version: 4,
       migrate: (persisted, version) => {
         let next = persisted as PersistedPlayerState;
         if (version < 2) {
@@ -511,6 +511,9 @@ export const usePlayerStore = create<PlayerState>()(
           };
         }
         if (version < 3) next = { ...next, repeat: 'all' };
+        // Levels measured by the builds whose decoder accumulated across frames
+        // read about 0 dBFS for everything, so they are not reusable numbers.
+        if (version < 4) next = { ...next, levels: {} };
         return next;
       },
       /**

@@ -40,7 +40,7 @@ export interface TrackAnalysis {
  * Stored columns. Deliberately far more than any screen shows: the scrubber
  * resamples to its own width, so a layout change never needs a new decode.
  */
-const CACHE_VERSION = 3;
+const CACHE_VERSION = 4;
 const BARS = 512;
 const SAMPLE_RATE = 8_000;
 /** Only the first 15 minutes are analysed: 14 MB of PCM, enough for any song. */

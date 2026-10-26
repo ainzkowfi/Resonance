@@ -68,20 +68,22 @@ class MediaAudioModule : Module() {
       val format = extractor.getTrackFormat(audioTrack)
       val sourceRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
       val channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-
       val decoder = MediaCodec.createDecoderByType(mime!!)
       codec = decoder
       decoder.configure(format, null, null, 0)
       decoder.start()
 
-      val resampler = BoxResampler(sourceRate, targetRate)
+      var resampler = BoxResampler(sourceRate, targetRate)
       val deadline = SystemClock.elapsedRealtime() + decodeBudgetMs
       val info = MediaCodec.BufferInfo()
       var sawInputEOS = false
       var sawOutputEOS = false
       var encoding = AudioFormat.ENCODING_PCM_16BIT
+      // What the decoder claims it emits, which is not always what the track
+      // format says: HE-AAC decodes at twice the rate the extractor reports.
+      var decodeRate = sourceRate
+      var outputChannels = channels
       var sourceFrames = 0L
-      val maxSourceFrames = maxSeconds.toLong() * sourceRate
 
       while (!sawOutputEOS) {
         if (SystemClock.elapsedRealtime() > deadline) {
@@ -93,12 +95,12 @@ class MediaAudioModule : Module() {
           if (inputIndex >= 0) {
             val input = decoder.getInputBuffer(inputIndex)
               ?: throw IllegalStateException("Codec returned no input buffer")
-            val size = extractor.readSampleData(input, 0L)
+            val size = extractor.readSampleData(input, 0)
             if (size < 0) {
-              decoder.queueInputBuffer(inputIndex, 0L, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+              decoder.queueInputBuffer(inputIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
               sawInputEOS = true
             } else {
-              decoder.queueInputBuffer(inputIndex, 0L, size, extractor.sampleTime, 0)
+              decoder.queueInputBuffer(inputIndex, 0, size, extractor.sampleTime, 0)
               extractor.advance()
             }
           }
@@ -109,9 +111,21 @@ class MediaAudioModule : Module() {
           if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
             // KEY_PCM_ENCODING is only knowable once the codec commits to an
             // output format; before that it is not present on outputFormat.
+            // The same commit can change the rate and channel count, and a
+            // resampler built from the track format would then mis-measure.
             val outputFormat = decoder.outputFormat
             if (outputFormat.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
               encoding = outputFormat.getInteger(MediaFormat.KEY_PCM_ENCODING)
+            }
+            if (outputFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+              outputChannels = outputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+            }
+            if (outputFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+              val rate = outputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+              if (rate != decodeRate) {
+                decodeRate = rate
+                resampler = BoxResampler(decodeRate, targetRate)
+              }
             }
             continue
           }
@@ -122,12 +136,12 @@ class MediaAudioModule : Module() {
           if (encoding != AudioFormat.ENCODING_PCM_16BIT && encoding != AudioFormat.ENCODING_PCM_FLOAT) {
             throw IllegalStateException("Unsupported PCM encoding $encoding from $mime decoder")
           }
-          val mono = downmixToMonoShorts(output, encoding == AudioFormat.ENCODING_PCM_FLOAT, channels)
+          val mono = downmixToMonoShorts(output, encoding == AudioFormat.ENCODING_PCM_FLOAT, outputChannels)
           resampler.feed(mono)
           sourceFrames += mono.size
           val ended = (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
           decoder.releaseOutputBuffer(outputIndex, false)
-          if (ended || sourceFrames >= maxSourceFrames) {
+          if (ended || sourceFrames >= maxSeconds.toLong() * decodeRate) {
             sawOutputEOS = true
             break
           }
@@ -257,6 +271,11 @@ class MediaAudioModule : Module() {
           }
           if (segmentEnd >= frameStart + step) {
             emit(sum / step)
+            // Each output frame starts empty. Without this reset the sums keep
+            // every sample since the start of the stream, so the second frame
+            // onwards is a running total and clips to full scale.
+            sum = 0.0
+            weight = 0.0
             frameStart += step
           }
           if (segmentEnd >= end) break
