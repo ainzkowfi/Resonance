@@ -22,7 +22,7 @@ export interface FeatureCheck {
   status: CheckStatus;
   /** What happened, in one line. */
   note: string;
-  /** Raw output worth pasting into a report: native errors, FFmpeg text. */
+  /** Raw output worth pasting into a report: native errors, decode output. */
   detail?: string;
   /** Wall-clock time the check took. */
   ms: number;

@@ -1181,7 +1181,7 @@ const checkResults: FeatureCheck[] = [
   { id: 'a', label: 'Saved settings', intent: '', status: 'pass', note: 'ok', ms: 1 },
   {
     id: 'b',
-    label: 'FFmpeg module',
+    label: 'Native audio module',
     intent: '',
     status: 'fail',
     note: 'not in this build',
@@ -1216,7 +1216,7 @@ ok(checkReport.includes('Resonance feature check'), 'the report has a title');
 ok(checkReport.includes('Version: 1.0.0'), 'the report carries the version');
 ok(checkReport.includes('Device: android 34'), 'the report carries the device');
 ok(checkReport.includes('Result: 2 passed · 1 failed · 1 skipped of 4'), 'the report summarises');
-ok(checkReport.includes('[FAIL] FFmpeg module — not in this build'), 'failures are marked');
+ok(checkReport.includes('[FAIL] Native audio module — not in this build'), 'failures are marked');
 ok(checkReport.includes('Import failed'), 'failure detail is included');
 ok(!checkReport.includes('probe.bin'), 'nothing invented appears in the report');
 
