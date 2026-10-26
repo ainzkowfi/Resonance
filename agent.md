@@ -2,10 +2,10 @@
 
 ## Overview
 
-Resonance is a local-first music player for iOS and Android built with React Native and Expo. It focuses on offline playback of local audio files with features like queue management, playlists, lyrics, lock screen controls, a polished dark UI, and an on-device audio analysis pipeline that powers waveforms, volume leveling and silence skipping. The app is designed to work entirely offline without cloud dependencies.
+Resonance is a local-first music player for Android built with React Native and Expo. It focuses on offline playback of local audio files with features like queue management, playlists, lyrics, lock screen controls, a polished dark UI, and an on-device audio analysis pipeline that powers waveforms, volume leveling and silence skipping. The app is designed to work entirely offline without cloud dependencies.
 
 **Key Characteristics:**
-- **Platform**: iOS, Android, Web (via Expo; analysis and waveform features are native-only)
+- **Platform**: Android (web preview available via Expo; analysis and waveform features are native-only)
 - **Type**: Mobile-first music player
 - **Architecture**: Local-first, offline-focused
 - **License**: See LICENSE file
@@ -27,8 +27,7 @@ Resonance is a local-first music player for iOS and Android built with React Nat
 - **expo-audio**: ~58.0.9 (audio playback engine with background support)
 - **expo-media-library**: ~58.0.11 (access to device media library)
 - **expo-file-system**: ~58.0.10 (file operations)
-- **ffmpeg-expo**: ^0.1.0 (LGPL FFmpeg subset — used only for decoding audio to PCM)
-- **expo-dev-client**: ~58.0.14 (FFmpeg and background audio need a development build)
+- **expo-dev-client**: ~58.0.14 (background audio and the inline native module need a development build)
 - **react-native-gesture-handler**: ~3.3.0
 - **react-native-reanimated**: 4.7.1
 
@@ -61,10 +60,11 @@ resonance/
 │   ├── audio/            # Audio playback engine
 │   │   └── engine.ts     # Singleton audio engine wrapping expo-audio
 │   ├── components/       # Reusable UI components (incl. Waveform.tsx)
-│   ├── ffmpeg/           # Native FFmpeg access and the analysis pipeline
-│   │   ├── module.ts     # Lazy, guarded import of ffmpeg-expo
-│   │   ├── probe.ts      # On-device capability check
-│   │   └── waveform.ts   # Decode → analyse → cache per track
+│   ├── media/             # Native codec access and the analysis pipeline
+│   │   ├── module.ts      # Lazy, guarded requireNativeModule('MediaAudioModule')
+│   │   ├── probe.ts       # On-device codec capability check
+│   │   └── waveform.ts    # Decode → analyse → cache per track
+│   ├── native/            # Inline Kotlin module (MediaCodec decode to WAV)
 │   ├── hooks/            # Custom React hooks
 │   ├── lib/              # Pure logic: parsers, maths, formatting
 │   ├── library/          # Local library scanning logic
@@ -75,7 +75,6 @@ resonance/
 ├── scripts/              # check.mts — the headless test suite
 ├── app.json              # Expo configuration
 ├── package.json          # Dependencies and scripts
-├── ffmpeg_analysis.md    # What the packaged FFmpeg build can and cannot do
 └── tsconfig.json         # TypeScript configuration
 ```
 
@@ -121,7 +120,7 @@ Drives the explicit batch analysis pass:
 In-memory, session-only log:
 - **Issues**: Last 12 caught failures with scope, message and raw detail
 - **Fatal errors**: Last render/runtime error plus component stack, shown as an overlay from the root layout instead of a force close
-- **Probe**: Last FFmpeg capability report
+- **Probe**: Last codec capability report
 - **Handoffs**: Last 20 measured track transitions
 
 ### Audio Engine (`src/audio/engine.ts`)
@@ -142,16 +141,16 @@ There is no true gapless playback: `expo-audio` has no playlist API, so one play
 - **Measurement** (`src/lib/handoff.ts`): every transition records *queue delay* (asked to load → `play()` called, clock started before teardown) and *start latency* (`play()` → audio moving, with the player's reported position subtracted). Samples above 5 s are discarded as stalls, and crossfaded transitions are excluded from the summary so the hard-cut number stays meaningful.
 - **Comparison**: Diagnostics reports preloaded and cold medians separately. If they match, `expo-audio` is loading lazily on `play()`, preloading bought nothing, and the standby player should be deleted.
 
-### Audio Analysis Pipeline (`src/ffmpeg/`, `src/lib/wav.ts`)
-One PCM decode per track yields everything the features need. This replaced an earlier `showwavespic` approach that could not work: the packaged FFmpeg is an LGPL subset without that filter, and PNG output only exists on Android.
+### Audio Analysis Pipeline (`src/media/`, `src/lib/wav.ts`)
+One PCM decode per track yields everything the features need. This replaced an earlier `showwavespic` approach that could not work through the `ffmpeg-expo` build, which crashed on decode.
 
-- **Decode**: `-vn -ac 1 -ar 8000 -t 900 -f wav` (mono, 8 kHz, first 15 minutes) into the cache
+- **Decode**: native `MediaAudioModule.decodeToWav` (MediaCodec) → mono, 8 kHz, first 15 minutes into the cache
 - **Derive in JS** (`analyzeWav`): 512 normalised peaks, dBFS RMS over non-silent frames, sample peak, and near-silence seconds at lead and tail
 - **Cache**: JSON per track under `cache/waveforms`, `CACHE_VERSION = 3`; stale versions are re-decoded rather than read
-- **Safety**: lazy guarded import (the native module throws at import when missing), 30 s decode timeout, crash marker (`waveform:pending-run`) that disables analysis for the session after a native crash, in-flight dedupe so concurrent requests share one decode
+- **Safety**: lazy guarded `requireNativeModule` (throws when the build lacks the module), 60 s native decode budget, crash marker (`waveform:pending-run`) that disables analysis for the session after a native crash, in-flight dedupe so concurrent requests share one decode
 - **Maintenance**: `pruneAnalysis` deletes cache files for tracks that left the library; there is no UI yet to clear the cache or inspect it
 
-What the binary supports is documented in [ffmpeg_analysis.md](ffmpeg_analysis.md) and checked on device by Settings → Diagnostics → "Check FFmpeg capabilities", which parses `-filters`, `-encoders`, `-muxers` and `-decoders` rather than trusting a README.
+What the device supports is checked on demand by Settings → Diagnostics → "Check codec support", which lists `MediaCodecList` decoders/encoders and then runs a real one-second decode self-test rather than trusting a spec sheet.
 
 ### Library Scanning (`src/library/local.ts`)
 Handles discovery and parsing of local audio files:
@@ -183,7 +182,7 @@ interface Track {
 }
 ```
 
-#### TrackAnalysis (`src/ffmpeg/waveform.ts`)
+#### TrackAnalysis (`src/media/waveform.ts`)
 ```typescript
 interface TrackAnalysis {
   peaks: number[];   // 512 normalised 0..1 columns
@@ -268,7 +267,7 @@ interface Lyrics {
 - **Library**: refresh/rescan, minimum duration, track counts, hidden tracks
 - **Analysis**: analysed/total count, start or cancel a batch run with progress
 - **Playback**: volume leveling, skip silence, crossfade length
-- **Diagnostics**: FFmpeg version, capability probe with shareable report, handoff timing (preloaded vs cold), recent problems and a shareable error log
+- **Diagnostics**: codec inventory, capability probe with shareable report, handoff timing (preloaded vs cold), recent problems and a shareable error log
 - **Credits**
 
 ### Lyrics Support
@@ -294,7 +293,7 @@ interface Lyrics {
 - **preload.ts**: When to open the next track
 - **handoff.ts**: Transition timing and summary
 - **analysisQueue.ts**: Which tracks a batch run should decode
-- **ffmpegReport.ts**: Capability listing parsing and report formatting
+- **codecReport.ts**: Capability report formatting for the codec probe
 - **errorHandler.ts**: Global JS error handler installation
 
 ## Configuration
@@ -304,13 +303,11 @@ interface Lyrics {
 - **Scheme**: resonance (deep linking)
 - **Orientation**: Portrait only
 - **UI Style**: Dark
-- **iOS**: Background audio enabled, media library permissions
 - **Android**: Permissions for READ_MEDIA_AUDIO, POST_NOTIFICATIONS, WAKE_LOCK
-- **Plugins**: expo-router, expo-image, expo-font, ffmpeg-expo (x86 included), expo-audio (background playback), expo-media-library (granular audio permissions)
+- **Plugins**: expo-router, expo-image, expo-font, expo-audio (background playback), expo-media-library (granular audio permissions)
 - **Experiments**: Typed routes enabled
 
 ### Environment & Permissions
-- **iOS InfoPlist**: `NSAppleMusicUsageDescription`, `UIBackgroundModes: ["audio"]`
 - **Android**: Runtime permissions for media access
 
 ## Scripts
@@ -319,7 +316,6 @@ interface Lyrics {
 {
   "start": "expo start",           // Start dev server
   "android": "expo run:android",   // Run on Android
-  "ios": "expo run:ios",           // Run on iOS
   "web": "expo start --web",       // Start on web
   "typecheck": "tsc --noEmit",     // Type checking
   "lint": "expo lint",             // Linting
@@ -343,27 +339,27 @@ interface Lyrics {
 2. **Gain Bus**: volume is owned by the engine (`setLevelGain` × fade), never written directly by stores or screens
 3. **Persistence Strategy**: Deduplicated AsyncStorage writes, selective partialize for player state
 4. **Error Resilience**: Audio loads wrapped in try/catch, failures don't crash app
-5. **Lazy Native Imports**: `ffmpeg-expo` is imported inside a guarded function, never at module top level, so a build without it degrades instead of crashing
+5. **Lazy Native Imports**: `MediaAudioModule` is required inside a guarded function, never at module top level, so a build without it degrades instead of crashing
 6. **Migration Safety**: Library store migrates local tracks only (filters out online URLs); analysis caches are versioned and re-decoded when stale
 7. **Background Audio**: Properly configured for lock screen controls
 
 ### Native Code
-- `ios/` and `android/` directories not present (uses Continuous Native Generation/CNG)
-- Native behavior configured via `app.json` and config plugins
-- Requires development build (not Expo Go) due to native modules (expo-audio with background playback, ffmpeg-expo)
+- `ios/` and `android/` directories are generated (Continuous Native Generation/CNG)
+- Native behavior configured via `app.json`; the audio decoder is an inline Kotlin module (`src/native/MediaAudioModule.kt`) picked up by `experiments.inlineModules`
+- Requires development build (not Expo Go) due to native modules (expo-audio with background playback, the inline MediaCodec module)
 
 ## Testing & Quality
-- `npm run check` — headless suite (`scripts/check.mts`) covering tag parsers, LRC, filtering, fuzzy search, WAV analysis, capability-report parsing, leveling, silence, waveform resampling, analysis queue, crossfade, handoff timing and preload: **230 checks**
+- `npm run check` — headless suite (`scripts/check.mts`) covering tag parsers, LRC, filtering, fuzzy search, WAV analysis, codec-report formatting, leveling, silence, waveform resampling, analysis queue, crossfade, handoff timing and preload: **294 checks**
 - `npx tsc --noEmit` and `npx expo lint` before committing (per AGENTS.md)
 - `npx expo export --platform android` as a bundle sanity check
-- What the suite cannot cover: anything native. FFmpeg availability, decode accuracy, waveform shape against the audio, crossfade smoothness, preload behaviour and handoff numbers all need a device build. Settings → Diagnostics is the intended place to read those results.
+- What the suite cannot cover: anything native. Codec availability, decode accuracy, waveform shape against the audio, crossfade smoothness, preload behaviour and handoff numbers all need a device build. Settings → Diagnostics is the intended place to read those results.
 
 ## Known Limitations
 - No true gapless playback (see above); the gap is measured and reduced, not removed
 - Leveling can only attenuate, never boost
-- Waveform, leveling and silence skipping need FFmpeg, so they are unavailable on web and in Expo Go
+- Waveform, leveling and silence skipping need the native module, so they are unavailable on web and in Expo Go
 - Analysis is capped at the first 15 minutes of a track and 200 tracks per batch run
-- Clip/ringtone export is not built; it would be AAC/M4A (no MP3 encoder in this build)
+- Clip/ringtone export is not built; it would need a MediaCodec encoder + MediaMuxer path that does not exist yet
 
 ## Potential Extension Points
 - Clip/ringtone export with a trim range on the waveform and a SAF output folder

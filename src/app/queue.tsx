@@ -13,7 +13,6 @@ import Animated, {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Artwork } from '../components/Artwork';
-import { PreparingChip } from '../components/PreparingChip';
 import { ScreenHeader } from '../components/ScreenHeader';
 import { Touch } from '../components/Touch';
 import { formatDuration } from '../lib/format';
@@ -117,7 +116,6 @@ function QueueRow({
   onMove: (to: number) => void;
   onDragState: (id: string | null) => void;
 }) {
-  const preparing = usePlayerStore((state) => state.preparingId === track.id);
   const translateY = useSharedValue(0);
   const dragging = useSharedValue(false);
 
@@ -166,11 +164,7 @@ function QueueRow({
               {track.artist}
             </Text>
           </View>
-          {preparing ? (
-            <PreparingChip />
-          ) : (
-            <Text style={styles.rowDuration}>{formatDuration(track.duration)}</Text>
-          )}
+          <Text style={styles.rowDuration}>{formatDuration(track.duration)}</Text>
         </Touch>
         <Touch
           style={styles.remove}

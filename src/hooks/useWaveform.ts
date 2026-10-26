@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-import { loadAnalysis } from '../ffmpeg/waveform';
+import { loadAnalysis } from '../media/waveform';
 
 /**
  * Peaks for a track: cached file if present, otherwise decoded once.

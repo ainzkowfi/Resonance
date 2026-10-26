@@ -15,8 +15,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BOTTOM_BAR_SPACE } from '../../components/bottomBar';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { Touch } from '../../components/Touch';
-import { runCapabilityProbe } from '../../ffmpeg/probe';
-import { getFFmpegInfo } from '../../ffmpeg/waveform';
+import { runCapabilityProbe } from '../../media/probe';
+import { getModuleInfo } from '../../media/waveform';
 import { MAX_CROSSFADE_SECONDS } from '../../lib/crossfade';
 import { formatDuration } from '../../lib/format';
 import { summarizeHandoffs } from '../../lib/handoff';
@@ -69,12 +69,12 @@ export default function SettingsScreen() {
   const measured = Object.keys(levels).length;
   const targetDb = useMemo(() => targetFromSamples(Object.values(levels)), [levels]);
   const [probing, setProbing] = useState(false);
-  const [ffmpeg, setFfmpeg] = useState('Checking…');
+  const [codec, setCodec] = useState('Checking…');
 
   useEffect(() => {
     let active = true;
-    void getFFmpegInfo().then((value) => {
-      if (active) setFfmpeg(value);
+    void getModuleInfo().then((value) => {
+      if (active) setCodec(value);
     });
     return () => {
       active = false;
@@ -97,15 +97,15 @@ export default function SettingsScreen() {
           : 'cold: none',
       ].join(' · ')
     : 'not measured';
-  const diagnostics = `Resonance diagnostics\nFFmpeg: ${ffmpeg}\nTrack handoff: ${handoffText}\n${Platform.OS} ${String(
+  const diagnostics = `Resonance diagnostics\nCodecs: ${codec}\nTrack handoff: ${handoffText}\n${Platform.OS} ${String(
     Platform.Version,
   )}\n\n${formatIssues(issues)}`;
 
   const capabilityHint = probing
-    ? 'Asking the binary on this device…'
+    ? 'Asking MediaCodec on this device…'
     : probe
       ? `Checked ${formatTime(probe.at)}`
-      : 'Lists what this build has, then encodes a test clip';
+      : 'Lists the device codecs, then runs a test decode';
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
@@ -231,10 +231,10 @@ export default function SettingsScreen() {
         </Section>
 
         <Section title="Diagnostics">
-          <InfoRow icon="hardware-chip-outline" label="FFmpeg" value={ffmpeg} />
+          <InfoRow icon="hardware-chip-outline" label="Codecs" value={codec} />
           <Row
             icon="search-outline"
-            label={probing ? 'Checking capabilities…' : 'Check FFmpeg capabilities'}
+            label={probing ? 'Checking capabilities…' : 'Check codec support'}
             hint={capabilityHint}
             onPress={() => {
               if (probing) return;
@@ -251,7 +251,7 @@ export default function SettingsScreen() {
                   color={probe.selfTest.ok ? palette.accentAlt : palette.textFaint}
                 />
                 <View style={styles.capText}>
-                  <Text style={styles.capLabel}>AAC / M4A export round trip</Text>
+                  <Text style={styles.capLabel}>Decode self-test</Text>
                   <Text style={styles.capNote} numberOfLines={2}>
                     {probe.selfTest.message}
                   </Text>
@@ -278,7 +278,7 @@ export default function SettingsScreen() {
             <Row
               icon="clipboard-outline"
               label="Share capability report"
-              hint={`FFmpeg ${probe.version}`}
+              hint={`Codecs: ${probe.version}`}
               onPress={() => void Share.share({ message: probe.report })}
             />
           ) : null}

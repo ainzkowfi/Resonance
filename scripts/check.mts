@@ -22,14 +22,12 @@ import { planAnalysisQueue } from '../src/lib/analysisQueue.ts';
 import { crossfadeStart, normalizeCrossfade } from '../src/lib/crossfade.ts';
 import { median, sampleFromTiming, summarizeHandoffs } from '../src/lib/handoff.ts';
 import { PRELOAD_LEAD_SECONDS, shouldPreload } from '../src/lib/preload.ts';
-import { buildCapabilities, condenseListing, formatReport, listNames } from '../src/lib/ffmpegReport.ts';
-import { evaluateExportCheck, selfTestWav } from '../src/lib/encodeCheck.ts';
+import { buildCapabilities, formatReport } from '../src/lib/codecReport.ts';
+import { evaluateDecodeCheck, selfTestWav } from '../src/lib/decodeCheck.ts';
 import {
   extensionOf,
   nativeCanPlay,
   playbackPlatform,
-  shouldTranscode,
-  transcodeArgs,
   unsupportedReason,
 } from '../src/lib/playbackSupport.ts';
 import {
@@ -646,94 +644,50 @@ ok(
   'an undeclared tag leaves the first window alone',
 );
 
-// ------------------------------------------------------ ffmpeg capability probe
-
-const filterListing = [
-  'Filters:',
-  ' T.. = Timeline support',
-  ' TSC aformat         A->A       Convert the input audio to one of the specified formats.',
-  ' ..C atrim           A->A       Pick one continuous section from the input.',
-  ' T.. volume          A->A       Change input volume.',
-  ' ... loudnorm        A->A       EBU R128 loudness normalization.',
-  ' ... showwavespic    A->V       Draw a waveform.',
-  ' ... vflip           V->V       Flip the input video vertically.',
-].join('\n');
-
-const encoderListing = [
-  'Encoders:',
-  ' V..... = Video',
-  ' A.... = Audio',
-  ' A..... aac            AAC (Advanced Audio Coding)',
-  ' A..... libmp3lame     libmp3lame MP3 (MPEG audio layer 3)',
-].join('\n');
-
-const muxerListing = [
-  'File formats:',
-  '  E  mp4             MP4 (MPEG-4 Part 14)',
-  '  E  ipod            iPod H.264 MP4',
-  '  E  wav             WAV / WAVE (Waveform Audio)',
-].join('\n');
-
-const decoderListing = [
-  'Decoders:',
-  ' A.... pcm_s16le        PCM signed 16-bit little-endian',
-  ' A.... flac             FLAC (Free Lossless Audio Codec)',
-].join('\n');
-
-const names = listNames(filterListing);
-ok(names.has('atrim') && names.has('volume'), 'filter names are parsed out of the listing');
-ok(names.has('aformat'), 'names with unusual flags columns are still parsed');
-ok(!names.has('filters:'), 'header lines are ignored');
-ok(listNames(muxerListing).has('mp4'), 'two-character flag columns are parsed');
-ok(listNames(decoderListing).has('pcm_s16le'), 'decoder names are parsed');
+// ------------------------------------------------------ codec capability probe
 
 const full = buildCapabilities({
-  filters: filterListing,
-  encoders: encoderListing,
-  muxers: muxerListing,
-  decoders: decoderListing,
+  decoders: [
+    'c2.android.mp3.decoder',
+    'c2.android.aac.decoder',
+    'OMX.google.flac.decoder',
+    'c2.android.vorbis.decoder',
+    'OMX.google.opus.decoder',
+  ],
+  encoders: ['c2.android.aac.encoder'],
 });
 const byLabel = (label: string) => full.find((item) => item.label === label);
-ok(byLabel('Waveform decode (PCM → WAV)')?.ok === true, 'waveform decode is detected');
-ok(byLabel('AAC encoder')?.ok === true, 'aac encoder is detected');
-ok(byLabel('MP4 / M4A muxer')?.ok === true, 'mp4 muxer is detected');
-ok(byLabel('Trim filter')?.ok === true, 'trim filter is detected');
-ok(byLabel('MP3 encoder (libmp3lame)')?.ok === true, 'libmp3lame is reported when present');
-ok(full.length === 9, `expected 9 capabilities, got ${full.length}`);
+ok(byLabel('MP3 decode')?.ok === true, 'MP3 decode is detected');
+ok(byLabel('AAC / M4A decode')?.ok === true, 'AAC decode is detected');
+ok(byLabel('FLAC decode')?.ok === true, 'FLAC decode is detected');
+ok(byLabel('Vorbis decode')?.ok === true, 'Vorbis decode is detected');
+ok(byLabel('Opus decode')?.ok === true, 'Opus decode is detected');
+ok(byLabel('PCM / WAV passthrough')?.ok === true, 'WAV is always decodable');
+ok(full.length === 6, `expected 6 capabilities, got ${full.length}`);
 
-const empty = buildCapabilities({ filters: '', encoders: '', muxers: '', decoders: '' });
-ok(empty.every((item) => !item.ok), 'an empty listing reports nothing as supported');
+const empty = buildCapabilities({ decoders: [], encoders: [] });
 ok(
-  buildCapabilities({
-    filters: filterListing,
-    encoders: encoderListing,
-    muxers: muxerListing,
-    decoders: '',
-  }).find((item) => item.label === 'Waveform decode (PCM → WAV)')?.ok === false,
-  'a missing decoder marks waveform decode as unsupported',
+  empty.filter((item) => item.ok).every((item) => item.label === 'PCM / WAV passthrough'),
+  'an empty codec list still admits plain WAV',
+);
+ok(
+  buildCapabilities({ decoders: ['c2.android.aac.decoder'], encoders: [] }).find(
+    (item) => item.label === 'MP3 decode',
+  )?.ok === false,
+  'a missing decoder is reported as unsupported',
 );
 
-const condensed = condenseListing(filterListing);
-ok(condensed.every((line) => !line.includes('vflip')), 'unrelated filters are dropped from the report');
-ok(condensed.some((line) => line.includes('volume')), 'relevant filters are kept');
-ok(condenseListing(filterListing, 2).length === 2, 'the condensed listing honours the line cap');
-
 const report = formatReport({
-  version: '6.1.1',
   device: 'android 34',
   capabilities: full,
-  listings: {
-    filters: filterListing,
-    encoders: encoderListing,
-    muxers: muxerListing,
-    decoders: decoderListing,
-  },
+  decoders: ['c2.android.mp3.decoder', 'c2.android.aac.decoder'],
+  encoders: ['c2.android.aac.encoder'],
 });
-ok(report.includes('6.1.1'), 'the report carries the version');
-ok(report.includes('[yes] AAC encoder'), 'supported capabilities are marked');
-ok(!report.includes('vflip'), 'the shared report stays filtered');
+ok(report.includes('android 34'), 'the report carries the device');
+ok(report.includes('[yes] MP3 decode'), 'supported capabilities are marked');
+ok(report.includes('c2.android.mp3.decoder'), 'the full codec names are listed');
 
-// ---------------------------------------------------------- export self-test
+// ---------------------------------------------------------- decode self-test
 
 const wav = selfTestWav();
 ok(wav.length === 44 + 16_000, `a second of 8 kHz mono is 16044 bytes, got ${wav.length}`);
@@ -741,26 +695,23 @@ ok(sniffFormat(wav) === 'wav', 'the self-test input is recognised as a WAV');
 ok(wav.some((byte) => byte !== 0), 'the test signal is not silence');
 ok(parseDuration(wav, 'wav', wav.length) === 1, 'the test signal declares one second of audio');
 
-const passed = evaluateExportCheck({ returnCode: 0, bytes: 16_384, ms: 320 });
-ok(passed.ok, 'a successful encode passes');
+const passed = evaluateDecodeCheck({ bytes: 16_384, ms: 320 });
+ok(passed.ok, 'a successful decode passes');
 ok(passed.message.includes('16.0 KB'), 'a pass reports how much was written');
 ok(passed.message.includes('320 ms'), 'a pass reports how long it took');
 
-const crashed = evaluateExportCheck({ returnCode: 1, bytes: 0, ms: 20 });
-ok(!crashed.ok, 'a non-zero exit fails the test');
-ok(crashed.message.includes('code 1'), 'the failure names the exit code');
-ok(!evaluateExportCheck({ returnCode: 0, bytes: 0, ms: 10 }).ok, 'success with no file still fails');
-ok(!evaluateExportCheck({ returnCode: 0, bytes: 400, ms: 10 }).ok, 'an implausibly small file fails');
+ok(!evaluateDecodeCheck({ bytes: 0, ms: 10 }).ok, 'success with no file still fails');
+ok(!evaluateDecodeCheck({ bytes: 400, ms: 10 }).ok, 'an implausibly small file fails');
 
 const withSelfTest = formatReport({
-  version: '6.1.1',
   device: 'android 34',
   capabilities: full,
   selfTest: passed,
-  listings: { filters: '', encoders: '', muxers: '', decoders: '' },
+  decoders: [],
+  encoders: [],
 });
-ok(withSelfTest.includes('export round trip: passed'), 'the report states the round trip result');
-ok(!report.includes('export round trip'), 'a report without a run leaves the line out');
+ok(withSelfTest.includes('decode self-test: passed'), 'the report states the decode result');
+ok(!report.includes('decode self-test'), 'a report without a run leaves the line out');
 
 // ------------------------------------------------ unplayable formats
 
@@ -774,11 +725,6 @@ ok(nativeCanPlay('/m/song.ogg', 'android'), 'Android can open Ogg');
 ok(!nativeCanPlay('/m/song.ape', 'android'), 'no platform opens APE');
 ok(nativeCanPlay('/m/song.mp3', 'ios'), 'MP3 plays natively');
 ok(nativeCanPlay('/m/no-extension', 'ios'), 'an unrecognised container is still given to the player');
-
-ok(shouldTranscode('/m/song.ogg', 'ios'), 'an unplayable Ogg on iOS gets a converted copy');
-ok(!shouldTranscode('/m/song.ogg', 'android'), 'Ogg on Android is played as it is');
-ok(!shouldTranscode('/m/song.mp3', 'ios'), 'a supported format is never re-encoded');
-ok(!shouldTranscode('/m/no-extension', 'ios'), 'an unrecognised container is not converted blindly');
 
 ok(/iOS cannot play OGG/.test(unsupportedReason('/m/a.ogg', 'ios') ?? ''), 'the reason names the platform');
 ok(/APE/.test(unsupportedReason('/m/a.ape', 'android') ?? ''), 'the reason names the container');
@@ -877,16 +823,6 @@ ok(removeExclusion([skip, skipper], skip).length === 1, 'removing drops exactly 
 
 ok(folderLabel(skip) === 'Skip', 'the label is the last path segment');
 ok(folderPath(skip).includes('Music/Skip'), 'the path drops the scheme and authority');
-
-const copyArgs = transcodeArgs({ source: '/tmp/in.ogg', output: '/tmp/out.m4a' });
-ok(copyArgs.includes('aac') && copyArgs.includes('mp4'), 'the copy is AAC in an MP4 wrapper');
-ok(copyArgs.includes('-vn'), 'embedded artwork is not carried into the copy');
-ok(copyArgs[copyArgs.length - 1] === '/tmp/out.m4a', 'the output path is the last argument');
-ok(copyArgs[copyArgs.indexOf('-b:a') + 1] === '128k', 'the copy uses the default bitrate');
-ok(
-  transcodeArgs({ source: 'a', output: 'b', bitrateKbps: 192 }).includes('192k'),
-  'the bitrate can be overridden',
-);
 
 // --------------------------------------------------- loudness and silence
 

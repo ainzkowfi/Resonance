@@ -8,7 +8,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { audioEngine } from '../audio/engine';
 import { ErrorScreen } from '../components/ErrorScreen';
 import { TrackMenu } from '../components/TrackMenu';
-import { absorbCrashMarker } from '../ffmpeg/waveform';
+import { absorbCrashMarker } from '../media/waveform';
 import { installGlobalErrorHandler } from '../lib/errorHandler';
 import { formatFatal, useDiagnosticsStore } from '../store/diagnostics';
 import { palette } from '../theme';

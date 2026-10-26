@@ -5,24 +5,22 @@ import { Platform } from 'react-native';
 import { stableId } from '../lib/format';
 import { analyzeWav } from '../lib/wav';
 import { describeError, useDiagnosticsStore } from '../store/diagnostics';
-import { ffmpegLoadFailure, loadFFmpeg, type FFmpegModule } from './module';
+import { loadNativeAudio, nativeAudioLoadFailure, type NativeAudioModule } from './module';
 import { toPath } from './paths';
 import { stageReadableSource } from './source';
 
 /**
  * Per-track audio analysis, computed on device.
  *
- * The first version of this asked FFmpeg for a `showwavespic` PNG. Two things
- * were wrong with that: `ffmpeg-expo` ships an LGPL build whose filter set does
- * not include `showwavespic`, and PNG output only exists on Android — so it
- * failed everywhere. It also crashed the app outright when the native module
- * was missing from the installed build.
+ * The device decoder (MediaCodec, via `src/native/MediaAudioModule.kt`) turns a
+ * track into a tiny mono WAV (8 kHz, 16-bit) and everything is derived in JS
+ * from those samples. One decode yields all of it: waveform peaks, integrated
+ * loudness for leveling, and how much near-silence sits at each end.
  *
- * So we now decode the track to a tiny mono WAV (`-ac 1 -ar 8000`) and derive
- * everything in JS. PCM/WAV are supported on both platforms, and one decode
- * yields all of it: waveform peaks, integrated loudness for leveling, and the
- * near-silence at each end. Every native call stays behind a lazy import, so a
- * build without the module degrades to "no analysis" instead of a crash.
+ * This lands after two earlier attempts. `showwavespic` needed an FFmpeg filter
+ * the packaged build did not have, and the `ffmpeg-expo` binary crashed the app
+ * outright because it could not actually decode. MediaCodec is what the system
+ * player itself uses, so a track that plays here decodes here.
  */
 
 export interface TrackAnalysis {
@@ -47,7 +45,6 @@ const BARS = 512;
 const SAMPLE_RATE = 8_000;
 /** Only the first 15 minutes are analysed: 14 MB of PCM, enough for any song. */
 const MAX_SECONDS = 900;
-const TIMEOUT_MS = 30_000;
 const CRASH_KEY = 'waveform:pending-run';
 const WAVEFORM_DIR = 'waveforms';
 const TEMP_DIR = 'waveform-tmp';
@@ -65,13 +62,14 @@ function recordError(message: string, error: unknown) {
   record(message, [info.message, info.stack].filter(Boolean).join('\n'));
 }
 
-export async function getFFmpegInfo(): Promise<string> {
-  if (Platform.OS === 'web') return 'unavailable on web';
-  const module = await loadFFmpeg();
-  const failure = ffmpegLoadFailure();
+/** One line for the Settings row: what the native layer can do, or why not. */
+export async function getModuleInfo(): Promise<string> {
+  if (Platform.OS !== 'android') return 'unavailable — Android only';
+  const module = await loadNativeAudio();
+  const failure = nativeAudioLoadFailure();
   if (!module) return failure ? `unavailable — ${failure}` : 'unavailable';
   try {
-    return module.getVersion().version;
+    return `MediaCodec — ${module.listDecoders().length} decoders`;
   } catch (error) {
     const info = describeError(error);
     return `unavailable — ${info.message}`;
@@ -109,56 +107,30 @@ function cacheFile(trackId: string): File {
   return new File(directory(WAVEFORM_DIR), `${keyOf(trackId)}.json`);
 }
 
-async function decodeToWav(module: FFmpegModule, sourcePath: string, wavPath: string): Promise<boolean> {
+async function decodeToWav(
+  module: NativeAudioModule,
+  sourcePath: string,
+  wavPath: string,
+): Promise<boolean> {
+  // Native work cannot be caught from JS; the marker tells the next launch to
+  // stand down instead of crashing in a loop.
   await AsyncStorage.setItem(CRASH_KEY, String(Date.now())).catch(() => undefined);
 
-  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const session = module.run(
-      [
-        '-y',
-        '-i',
-        sourcePath,
-        '-vn',
-        '-ac',
-        '1',
-        '-ar',
-        String(SAMPLE_RATE),
-        '-t',
-        String(MAX_SECONDS),
-        '-f',
-        'wav',
-        wavPath,
-      ],
-      { logLevel: 'error' },
-    );
-
-    timer = setTimeout(() => {
-      void session.cancel();
-    }, TIMEOUT_MS);
-
-    const result = await session.result;
-    if (result.returnCode !== 0) {
-      record(
-        `FFmpeg could not decode this track (exit ${result.returnCode}).`,
-        result.output.trim() || undefined,
-      );
-      return false;
-    }
+    await module.decodeToWav(sourcePath, wavPath, SAMPLE_RATE, MAX_SECONDS);
     return true;
   } catch (error) {
-    recordError('FFmpeg failed while decoding this track.', error);
+    recordError('The device decoder failed to decode this track.', error);
     return false;
   } finally {
-    if (timer) clearTimeout(timer);
     await AsyncStorage.removeItem(CRASH_KEY).catch(() => undefined);
   }
 }
 
 async function generate(trackId: string, trackUri: string): Promise<TrackAnalysis | undefined> {
-  if (disabledForSession || Platform.OS === 'web') return undefined;
+  if (disabledForSession || Platform.OS !== 'android') return undefined;
 
-  const module = await loadFFmpeg();
+  const module = await loadNativeAudio();
   if (!module) return undefined;
 
   const key = keyOf(trackId);
@@ -180,7 +152,7 @@ async function generate(trackId: string, trackUri: string): Promise<TrackAnalysi
     const bytes = await wavFile.bytes();
     const analysis = analyzeWav(bytes, { barCount: BARS, sampleRate: SAMPLE_RATE });
     if (!analysis) {
-      record('FFmpeg produced no audio samples for this track. The file may be DRM-protected.');
+      record('Decoding produced no audio samples for this track. The file may be DRM-protected.');
       return undefined;
     }
 

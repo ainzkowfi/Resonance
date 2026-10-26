@@ -1,10 +1,8 @@
 /**
  * Crossfade maths.
  *
- * Crossfading happens in the player, not in FFmpeg: the packaged build has no
- * `afade`/`acrossfade` filter and `volume` is a static gain, so a blended
- * junction cannot be rendered offline. The engine runs two players and ramps
- * their volumes instead.
+ * Crossfading happens in the player: the engine runs two players and ramps
+ * their volumes instead of rendering a blended junction offline.
  */
 
 /** Long enough to notice, short enough to stay a detail. */

@@ -2,7 +2,6 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { File } from 'expo-file-system';
 import { create } from 'zustand';
 
-import { prunePlaybackCopies } from '../ffmpeg/transcode';
 import { applyLibraryFilter, EMPTY_FILTER, type TrackOverrides } from '../lib/filter';
 import { addExclusion, removeExclusion } from '../lib/folderExclusions';
 import {
@@ -276,9 +275,6 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
         permission: 'granted',
         cacheLoaded: true,
       });
-      // Converted playback copies are megabytes each; a rescan is the natural
-      // moment to drop the ones whose track is gone.
-      void prunePlaybackCopies(entries.map((track) => track.id));
     } catch (error) {
       set({
         scanning: false,

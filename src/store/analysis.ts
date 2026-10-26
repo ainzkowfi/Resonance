@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-import { hasAnalysis, loadAnalysis, pruneAnalysis } from '../ffmpeg/waveform';
+import { hasAnalysis, loadAnalysis, pruneAnalysis } from '../media/waveform';
 import { planAnalysisQueue } from '../lib/analysisQueue';
 import type { Track } from '../types/track';
 import { usePlayerStore } from './player';

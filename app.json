@@ -12,15 +12,6 @@
       "resizeMode": "contain",
       "backgroundColor": "#04060C"
     },
-    "ios": {
-      "supportsTablet": true,
-      "bundleIdentifier": "com.resonance.app",
-      "infoPlist": {
-        "NSAppleMusicUsageDescription": "Resonance needs media library access to read your local music.",
-        "UIBackgroundModes": ["audio"],
-        "CADisableMinimumFrameDurationOnPhone": true
-      }
-    },
     "android": {
       "package": "com.resonance.app",
       "adaptiveIcon": {
@@ -41,12 +32,6 @@
       "expo-image",
       "expo-font",
       [
-        "ffmpeg-expo",
-        {
-          "includeX86": true
-        }
-      ],
-      [
         "expo-audio",
         {
           "enableBackgroundPlayback": true
@@ -60,7 +45,10 @@
       ]
     ],
     "experiments": {
-      "typedRoutes": true
+      "typedRoutes": true,
+      "inlineModules": {
+        "watchedDirectories": ["src"]
+      }
     }
   }
 }

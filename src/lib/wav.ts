@@ -1,10 +1,10 @@
 /**
  * Analysis of decoded PCM.
  *
- * FFmpeg hands us a mono 16-bit WAV; from those samples we can derive
- * everything the player needs without any further FFmpeg filters: the peaks for
- * the waveform, the integrated loudness for leveling, and how much near-silence
- * sits at each end.
+ * The native decoder hands us a mono 16-bit WAV; from those samples we can
+ * derive everything the player needs without any further filtering: the peaks
+ * for the waveform, the integrated loudness for leveling, and how much
+ * near-silence sits at each end.
  *
  * Kept free of native imports so `scripts/check.mts` can exercise it.
  */

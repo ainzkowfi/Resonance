@@ -4,13 +4,11 @@ import { extensionOf } from '../lib/playbackSupport';
 import { toPath } from './paths';
 
 /**
- * A source FFmpeg can open.
+ * A source the native decoder can open.
  *
- * Files picked through the system folder picker are `content://` URIs (or, on
- * iOS, security-scoped file URLs), and FFmpeg only takes plain paths — so
- * anything that is not `file://` is copied into the caller's cache directory
- * first. Shared by the analysis pipeline and the playback conversion so the two
- * cannot disagree about what FFmpeg is handed.
+ * Files picked through the system folder picker are `content://` URIs, and
+ * MediaExtractor only takes plain paths — so anything that is not `file://` is
+ * copied into the caller's cache directory first.
  */
 export interface StagedSource {
   path: string;

@@ -1,8 +1,8 @@
 import { Platform } from 'react-native';
 import { create } from 'zustand';
 
-import type { ExportCheckResult } from '../lib/encodeCheck';
-import type { Capability } from '../lib/ffmpegReport';
+import type { DecodeCheckResult } from '../lib/decodeCheck';
+import type { Capability } from '../lib/codecReport';
 import type { HandoffSample } from '../lib/handoff';
 
 /**
@@ -19,7 +19,7 @@ export interface DiagnosticIssue {
   /** Where it happened, e.g. `waveform`. */
   scope: string;
   message: string;
-  /** Raw native/FFmpeg output, stack trace, etc. */
+  /** Raw native output, stack trace, etc. */
   detail?: string;
 }
 
@@ -30,13 +30,13 @@ export interface FatalError {
   componentStack?: string;
 }
 
-/** Result of the on-device FFmpeg capability check. */
+/** Result of the on-device codec capability check. */
 export interface ProbeReport {
   at: number;
   version: string;
   capabilities: Capability[];
   /** A real encode, not just a component listing. */
-  selfTest: ExportCheckResult & { detail?: string };
+  selfTest: DecodeCheckResult & { detail?: string };
   /** Compact, shareable text. */
   report: string;
 }
