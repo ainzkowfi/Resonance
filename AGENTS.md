@@ -1,5 +1,14 @@
 This is an Expo/React Native mobile application. Prioritize mobile-first patterns, performance, and cross-platform compatibility.
 
+## Branching — `main` is the only branch
+
+`main` is the single long-lived branch, the default branch, and the only branch on `origin`. There is no `master` branch.
+
+- Land finished work on `main` and push it to `origin/main`. Do not open feature branches, pull requests, or ask which branch to use.
+- The `freebuff/<chat-id>` branch is a per-chat scratch worktree. When a task is finished, the result belongs on `main` — a commit sitting only on that branch has not been delivered.
+- `ci.yml` (typecheck, lint, unit checks) and `build-android.yml` (release APK) both trigger on pushes to `main` and `v*` tags. If a workflow does not fire, its `on:` filter has drifted from the branch name — fix the filter, do not rename the branch.
+- Verify a push actually landed by comparing `HEAD` with `FETCH_HEAD` after fetching; this clone has no remote-tracking refs configured.
+
 ## Audit Rules
 
 - **Always re-evaluate every finding to filter out false positives** before reporting. Verify each issue against the actual code behavior.
