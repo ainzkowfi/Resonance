@@ -12,8 +12,10 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { activeEngineSource, type EngineSource } from '../../audio/engine';
 import { BOTTOM_BAR_SPACE } from '../../components/bottomBar';
 import { ScreenHeader } from '../../components/ScreenHeader';
+import { Segmented } from '../../components/Segmented';
 import { Touch } from '../../components/Touch';
 import { FEATURE_CHECK_COUNT, runFeatureChecks } from '../../lib/featureAudit';
 import {
@@ -34,6 +36,29 @@ import { formatIssues, formatTime, useDiagnosticsStore } from '../../store/diagn
 import { useLibraryStore } from '../../store/library';
 import { usePlayerStore } from '../../store/player';
 import { font, palette, radius } from '../../theme';
+
+/**
+ * The engine picker.
+ *
+ * `auto` is the normal setting: it plays through the native player when the
+ * build has one and falls back to expo-audio when it does not. The other two
+ * force a library, which is how a build that misbehaves on one is recovered
+ * from the other without waiting for a new one — the choice is saved and
+ * applied on the next launch as well as straight away.
+ */
+const ENGINE_OPTIONS: { value: EngineSource; label: string; hint: string }[] = [
+  { value: 'auto', label: 'Auto', hint: 'Native when this build has it, expo-audio otherwise' },
+  { value: 'native', label: 'Native', hint: 'The platform player; no library underneath it' },
+  { value: 'expo', label: 'Expo', hint: 'expo-audio — the fallback if native misbehaves' },
+];
+
+function engineHint(source: EngineSource): string {
+  return ENGINE_OPTIONS.find((option) => option.value === source)?.hint ?? '';
+}
+
+function engineLabel(source: EngineSource): string {
+  return ENGINE_OPTIONS.find((option) => option.value === source)?.label ?? 'Auto';
+}
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
@@ -58,6 +83,8 @@ export default function SettingsScreen() {
   const setSkipSilence = usePlayerStore((state) => state.setSkipSilence);
   const crossfade = usePlayerStore((state) => state.crossfade);
   const setCrossfade = usePlayerStore((state) => state.setCrossfade);
+  const playbackEngine = usePlayerStore((state) => state.playbackEngine);
+  const setPlaybackEngine = usePlayerStore((state) => state.setPlaybackEngine);
   const entries = useLibraryStore((state) => state.entries);
   const running = useAnalysisRunStore((state) => state.running);
   const analyzedCount = useAnalysisRunStore((state) => state.done);
@@ -277,6 +304,26 @@ export default function SettingsScreen() {
             step={1}
             onChange={setCrossfade}
           />
+          <View style={styles.engineBlock}>
+            <View style={styles.row}>
+              <View style={styles.rowIcon}>
+                <Ionicons name="musical-notes-outline" size={18} color={palette.textDim} />
+              </View>
+              <View style={styles.rowText}>
+                <Text style={styles.rowLabel}>Playback engine</Text>
+                <Text style={styles.rowHint} numberOfLines={2}>
+                  {engineHint(playbackEngine)}
+                </Text>
+              </View>
+            </View>
+            <View style={styles.enginePicker}>
+              <Segmented
+                options={ENGINE_OPTIONS}
+                value={playbackEngine}
+                onChange={setPlaybackEngine}
+              />
+            </View>
+          </View>
         </Section>
 
         <Section title="Self-test">
@@ -343,6 +390,13 @@ export default function SettingsScreen() {
 
         <Section title="Diagnostics">
           <InfoRow icon="hardware-chip-outline" label="Codecs" value={codec} />
+          <InfoRow
+            icon="musical-notes-outline"
+            label="Playback engine"
+            value={`${engineLabel(playbackEngine)} · ${
+              activeEngineSource() === 'native' ? 'native' : 'expo-audio'
+            }`}
+          />
           <Row
             icon="search-outline"
             label={probing ? 'Checking capabilities…' : 'Check codec support'}
@@ -435,7 +489,8 @@ export default function SettingsScreen() {
             playback and lyrics stay on this device; no online catalog or lyrics service is used.
           </Text>
           <Text style={styles.credits}>
-            Playback uses expo-audio. Version {Constants.expoConfig?.version ?? '1.0.0'}.
+            Playback uses {activeEngineSource() === 'native' ? 'the native player' : 'expo-audio'}.
+            Version {Constants.expoConfig?.version ?? '1.0.0'}.
           </Text>
         </Section>
       </ScrollView>
@@ -723,6 +778,12 @@ const styles = StyleSheet.create({
   },
   rangeRow: {
     paddingBottom: 6,
+  },
+  engineBlock: {
+    paddingBottom: 10,
+  },
+  enginePicker: {
+    paddingHorizontal: 14,
   },
   sliderHit: {
     height: 30,

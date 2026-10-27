@@ -1,6 +1,7 @@
 import { requireNativeModule } from 'expo';
 
 import { toPath } from '../media/paths';
+import { describeError, useDiagnosticsStore } from '../store/diagnostics';
 import type { EnginePlayer, LockScreenOptions, PlayerBackend } from './backend';
 import { BasePlaybackEngine } from './engineBase';
 import type { EngineStatus } from './types';
@@ -144,7 +145,21 @@ class NativeBackend implements PlayerBackend {
   constructor(private readonly module: NativePlayerModule) {}
 
   async configure(): Promise<void> {
-    await this.module.configure();
+    try {
+      await this.module.configure();
+    } catch (error) {
+      // Not fatal: the first load will report the same thing as a rejection
+      // where the store can act on it. Recorded rather than thrown because the
+      // app calls this with `void` while the layout mounts.
+      const info = describeError(error);
+      useDiagnosticsStore
+        .getState()
+        .addIssue(
+          'audio',
+          'The native player could not be configured.',
+          [info.message, info.stack].filter(Boolean).join('\n'),
+        );
+    }
     this.subscription ??= this.module.addListener('onPlaybackStatus', (payload) => {
       if (!payload) return;
       const player = this.players.get(payload.handle);

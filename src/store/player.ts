@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 import { create } from 'zustand';
 import { createJSONStorage, persist, type PersistStorage } from 'zustand/middleware';
-import { audioEngine } from '../audio/engine';
+import { audioEngine, setEngineSource, type EngineSource } from '../audio/engine';
 import { loadAnalysis, type TrackAnalysis } from '../media/waveform';
 import { crossfadeStart, normalizeCrossfade } from '../lib/crossfade';
 import { sanitizeTracks } from '../lib/filter';
@@ -58,6 +58,13 @@ export interface PlayerState {
   silenceTail: number;
   /** Blend length between queued tracks, seconds. 0 turns crossfading off. */
   crossfade: number;
+  /**
+   * Which player library to play through. `auto` prefers the native player and
+   * falls back to expo-audio when the build does not carry one; the other two
+   * force a choice, which is how a build that misbehaves on one is recovered
+   * from the other without a rebuild.
+   */
+  playbackEngine: EngineSource;
   /** Why the current track would not play. */
   notice: PlaybackNotice | null;
 
@@ -76,6 +83,7 @@ export interface PlayerState {
   setLeveling: (enabled: boolean) => void;
   setSkipSilence: (enabled: boolean) => void;
   setCrossfade: (seconds: number) => void;
+  setPlaybackEngine: (source: EngineSource) => void;
   recordLevel: (trackId: string, rmsDb: number) => void;
   dismissNotice: () => void;
   applyStatus: (status: {
@@ -103,6 +111,7 @@ interface PersistedPlayerState {
   levels: Record<string, number>;
   skipSilence: boolean;
   crossfade: number;
+  playbackEngine: EngineSource;
 }
 
 /** Median loudness only needs a representative sample, not every track ever. */
@@ -149,6 +158,7 @@ export const usePlayerStore = create<PlayerState>()(
       skipSilence: false,
       silenceTail: 0,
       crossfade: 0,
+      playbackEngine: 'auto',
       notice: null,
 
       playTracks: (tracks, startIndex = 0) => {
@@ -383,6 +393,15 @@ export const usePlayerStore = create<PlayerState>()(
 
       setCrossfade: (seconds) => set({ crossfade: normalizeCrossfade(seconds) }),
 
+      setPlaybackEngine: (source) => {
+        const { currentTrack, isPlaying, position } = get();
+        set({ playbackEngine: source });
+        setEngineSource(source);
+        // The engine that was running has been dropped, so the loaded track is
+        // opened again on the new one, at the position it had reached.
+        if (currentTrack) loadTrack(currentTrack, { startAt: position, autoplay: isPlaying });
+      },
+
       recordLevel: (trackId, rmsDb) => {
         if (!Number.isFinite(rmsDb)) return;
         set((state) => {
@@ -558,6 +577,10 @@ export const usePlayerStore = create<PlayerState>()(
           levels,
           skipSilence: raw.skipSilence === true,
           crossfade: normalizeCrossfade(typeof raw.crossfade === 'number' ? raw.crossfade : 0),
+          playbackEngine:
+            raw.playbackEngine === 'expo' || raw.playbackEngine === 'native'
+              ? raw.playbackEngine
+              : 'auto',
         };
       },
       partialize: (state): PersistedPlayerState => ({
@@ -573,6 +596,7 @@ export const usePlayerStore = create<PlayerState>()(
         levels: state.levels,
         skipSilence: state.skipSilence,
         crossfade: state.crossfade,
+        playbackEngine: state.playbackEngine,
       }),
     },
   ),
@@ -776,6 +800,12 @@ function restorePersistedPlayback(): void {
   usePlayerStore.setState({ position: state.resumePosition });
   loadTrack(state.currentTrack, { startAt: state.resumePosition });
 }
+
+// The saved engine is applied before the persisted track is opened, or a saved
+// fallback would play that one track on the wrong player.
+usePlayerStore.persist.onFinishHydration(() =>
+  setEngineSource(usePlayerStore.getState().playbackEngine),
+);
 
 usePlayerStore.persist.onFinishHydration(restorePersistedPlayback);
 if (usePlayerStore.persist.hasHydrated()) restorePersistedPlayback();

@@ -44,6 +44,12 @@ export interface CrossfadeOptions extends LoadOptions {
   gain?: number;
 }
 
+/**
+ * Which player library the app plays through. `auto` prefers the native player
+ * and uses expo-audio when the build does not carry one.
+ */
+export type EngineSource = 'auto' | 'expo' | 'native';
+
 export interface PlaybackEngine {
   setStatusListener: (listener: StatusListener | null) => void;
   setHandoffListener: (listener: HandoffListener | null) => void;
