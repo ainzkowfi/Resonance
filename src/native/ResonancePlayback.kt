@@ -51,6 +51,17 @@ internal object ResonancePlayback {
   private const val CHANNEL_NAME = "Playback"
   private const val TICK_MS = 250L
 
+  /**
+   * How long an idle player waits before the service is torn down.
+   *
+   * A track change releases the old player before the new one is opened, so
+   * stopping the service the moment `holders` empties would stop and restart a
+   * foreground service on every boundary — and Android refuses that restart
+   * once the app is in the background, which took background playback down with
+   * it. The gap is milliseconds, so the stop is deferred instead.
+   */
+  private const val STOP_GRACE_MS = 5_000L
+
   private const val ACTION_PLAY = "com.resonance.app.playback.PLAY"
   private const val ACTION_PAUSE = "com.resonance.app.playback.PAUSE"
   private const val ACTION_FORWARD = "com.resonance.app.playback.FORWARD"
@@ -79,6 +90,7 @@ internal object ResonancePlayback {
   private var session: MediaSession? = null
   private var receiver: BroadcastReceiver? = null
   private var tickerPosted = false
+  private var stopPending = false
   private var serviceRunning = false
   private var focusHeld = false
   private var focusRequest: AudioFocusRequest? = null
@@ -109,16 +121,22 @@ internal object ResonancePlayback {
   fun open(handle: String, path: String) {
     val ctx = context ?: throw IllegalStateException("The playback module has no Android context")
     release(handle)
+    cancelStop()
 
     val player = MediaPlayer()
     val holder = Holder(player)
     holders[handle] = holder
 
+    // `nativeSource()` already strips the scheme, but a `file://` URI that
+    // reaches `setDataSource` is rejected outright, so it is stripped again
+    // rather than trusted.
+    val source = if (path.startsWith("file://")) path.substring("file://".length) else path
+
     try {
       player.setAudioAttributes(audioAttributes)
       player.setWakeMode(ctx, PowerManager.PARTIAL_WAKE_LOCK)
-      if (path.startsWith("content://")) player.setDataSource(ctx, Uri.parse(path))
-      else player.setDataSource(path)
+      if (source.startsWith("content://")) player.setDataSource(ctx, Uri.parse(source))
+      else player.setDataSource(source)
     } catch (error: Exception) {
       holders.remove(handle)
       try {
@@ -132,8 +150,27 @@ internal object ResonancePlayback {
     player.setOnPreparedListener {
       holder.loaded = true
       holder.buffering = false
-      emitStatus()
-      updateNotification()
+      holder.error = null
+
+      // The engine is allowed to seek and play before the source is ready, so
+      // both requests wait here instead of failing. `start()` on a player that
+      // is still preparing throws and would otherwise be reported to the store
+      // as an unplayable track.
+      val pendingSeek = holder.pendingSeekSeconds
+      holder.pendingSeekSeconds = null
+      if (pendingSeek != null) applySeek(holder, pendingSeek)
+
+      // The duration is only known now, and the lock screen draws its seek bar
+      // from the metadata — publishing it before this left the bar inert.
+      updateSessionMetadata()
+
+      if (holder.pendingPlay) {
+        holder.pendingPlay = false
+        start(holder)
+      } else {
+        emitStatus()
+        updateNotification()
+      }
     }
     player.setOnCompletionListener {
       // Reported once here and cleared by the next start or seek; the
@@ -147,6 +184,8 @@ internal object ResonancePlayback {
       holder.error = "MediaPlayer error $what/$extra"
       holder.loaded = false
       holder.buffering = false
+      holder.pendingPlay = false
+      holder.pendingSeekSeconds = null
       emitStatus()
       true
     }
@@ -166,6 +205,22 @@ internal object ResonancePlayback {
 
   fun play(handle: String) {
     val holder = holders[handle] ?: return
+    cancelStop()
+    // The foreground service is what keeps the players alive once the app is
+    // no longer in front. It is started from here rather than from `start()` so
+    // a player that is still preparing is already covered by it.
+    startService()
+    if (!holder.loaded) {
+      holder.pendingPlay = true
+      emitStatus()
+      updateNotification()
+      return
+    }
+    start(holder)
+  }
+
+  /** Starts a player that is known to be prepared. */
+  private fun start(holder: Holder) {
     holder.finished = false
     holder.error = null
     requestFocus()
@@ -174,19 +229,18 @@ internal object ResonancePlayback {
     } catch (error: Exception) {
       holder.error = error.message ?: "Could not start playback"
     }
-    // The foreground service is what keeps the players alive once the app is
-    // no longer in front; it stays up until the session is cleared.
-    startService()
     emitStatus()
     updateNotification()
   }
 
   fun pause(handle: String) {
     val holder = holders[handle] ?: return
+    // A pause before the source is ready must cancel the queued start.
+    holder.pendingPlay = false
     try {
       holder.player.pause()
     } catch (_: Exception) {
-      // Already stopped.
+      // Still preparing, or already stopped.
     }
     emitStatus()
     updateNotification()
@@ -194,23 +248,35 @@ internal object ResonancePlayback {
 
   fun seek(handle: String, seconds: Double) {
     val holder = holders[handle] ?: return
+    val target = seconds.coerceAtLeast(0.0)
     if (!holder.loaded) {
-      // A seek before the source is open is refused; the engine keeps the
-      // position it asked for and applies it once a loaded status arrives.
-      throw IllegalStateException("The player is not loaded yet")
+      // Applying it now would throw; the engine's own pending seek is not the
+      // only caller (`setLockScreen` buttons, a promoted preload), so it is
+      // kept here and applied by the prepared callback.
+      holder.pendingSeekSeconds = target
+      emitStatus()
+      return
     }
+    applySeek(holder, target)
+    emitStatus()
+    updateNotification()
+  }
+
+  private fun applySeek(holder: Holder, seconds: Double) {
     val position = (seconds * 1000.0).toLong().coerceAtLeast(0L)
     val duration = safeDuration(holder).toLong()
     val target = if (duration > 0) position.coerceAtMost(duration) else position
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-      holder.player.seekTo(target, MediaPlayer.SEEK_CLOSEST)
-    } else {
-      @Suppress("DEPRECATION")
-      holder.player.seekTo(target.toInt())
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        holder.player.seekTo(target, MediaPlayer.SEEK_CLOSEST)
+      } else {
+        @Suppress("DEPRECATION")
+        holder.player.seekTo(target.toInt())
+      }
+    } catch (_: Exception) {
+      // Raced with a release; nothing left to seek.
     }
     holder.finished = false
-    emitStatus()
-    updateNotification()
   }
 
   fun setVolume(handle: String, volume: Float) {
@@ -231,11 +297,36 @@ internal object ResonancePlayback {
       // Already released.
     }
 
-    if (holder.lockScreen) clearLockScreen()
+    // The session is left alone on purpose. A track change releases this
+    // player and opens the next one immediately, and tearing the lock screen
+    // and the service down in between is what stopped background playback at
+    // every track boundary. If nothing follows, `stopWhenIdle` cleans up.
+    holder.lockScreen = false
     if (holders.isEmpty()) {
-      abandonFocus()
       stopTicker()
-      stopService()
+      scheduleStop()
+    }
+  }
+
+  private fun scheduleStop() {
+    if (stopPending) return
+    stopPending = true
+    main.postDelayed(stopWhenIdle, STOP_GRACE_MS)
+  }
+
+  private fun cancelStop() {
+    if (!stopPending) return
+    stopPending = false
+    main.removeCallbacks(stopWhenIdle)
+  }
+
+  /** Runs the teardown a released player would have run, once nothing replaced it. */
+  private val stopWhenIdle = object : Runnable {
+    override fun run() {
+      stopPending = false
+      if (holders.isNotEmpty()) return
+      abandonFocus()
+      clearLockScreen()
     }
   }
 
@@ -512,6 +603,7 @@ internal object ResonancePlayback {
 
   private fun startService() {
     val ctx = context ?: return
+    cancelStop()
     if (serviceRunning) return
     val intent = Intent(ctx, ResonancePlaybackService::class.java)
     try {
@@ -733,6 +825,10 @@ internal object ResonancePlayback {
     var buffering = false
     var finished = false
     var error: String? = null
+    /** A `start()` that arrived before the source was ready. */
+    var pendingPlay = false
+    /** A `seek()` that arrived before the source was ready, in seconds. */
+    var pendingSeekSeconds: Double? = null
     var lockScreen = false
     var title = ""
     var artist = ""
