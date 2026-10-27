@@ -12,7 +12,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { activeEngineSource, type EngineSource } from '../../audio/engine';
+import { useActiveEngineSource, type EngineSource } from '../../audio/engine';
 import { BOTTOM_BAR_SPACE } from '../../components/bottomBar';
 import { ScreenHeader } from '../../components/ScreenHeader';
 import { Segmented } from '../../components/Segmented';
@@ -63,6 +63,10 @@ function engineLabel(source: EngineSource): string {
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const contentStyle = useMemo(
+    () => [styles.content, { paddingBottom: BOTTOM_BAR_SPACE + insets.bottom + 24 }],
+    [insets.bottom],
+  );
   const queueLength = usePlayerStore((state) => state.queue.length);
   const trackCount = useLibraryStore((state) => state.tracks.length);
   const minDuration = useLibraryStore((state) => state.minDuration);
@@ -85,6 +89,9 @@ export default function SettingsScreen() {
   const setCrossfade = usePlayerStore((state) => state.setCrossfade);
   const playbackEngine = usePlayerStore((state) => state.playbackEngine);
   const setPlaybackEngine = usePlayerStore((state) => state.setPlaybackEngine);
+  // Re-renders when the engine swaps itself, so the row below cannot claim a
+  // library the app is not actually playing through.
+  const runningEngine = useActiveEngineSource();
   const entries = useLibraryStore((state) => state.entries);
   const running = useAnalysisRunStore((state) => state.running);
   const analyzedCount = useAnalysisRunStore((state) => state.done);
@@ -186,10 +193,7 @@ export default function SettingsScreen() {
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
       <ScreenHeader title="Settings" subtitle="Playback, library and credits" />
-      <ScrollView
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-      >
+      <ScrollView contentContainerStyle={contentStyle} showsVerticalScrollIndicator={false}>
         <Section title="Library">
           <Row
             icon="refresh-outline"
@@ -394,7 +398,7 @@ export default function SettingsScreen() {
             icon="musical-notes-outline"
             label="Playback engine"
             value={`${engineLabel(playbackEngine)} · ${
-              activeEngineSource() === 'native' ? 'native' : 'expo-audio'
+              runningEngine === 'native' ? 'native' : 'expo-audio'
             }`}
           />
           <Row
@@ -489,7 +493,7 @@ export default function SettingsScreen() {
             playback and lyrics stay on this device; no online catalog or lyrics service is used.
           </Text>
           <Text style={styles.credits}>
-            Playback uses {activeEngineSource() === 'native' ? 'the native player' : 'expo-audio'}.
+            Playback uses {runningEngine === 'native' ? 'the native player' : 'expo-audio'}.
             Version {Constants.expoConfig?.version ?? '1.0.0'}.
           </Text>
         </Section>
@@ -644,7 +648,6 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingHorizontal: 16,
-    paddingBottom: BOTTOM_BAR_SPACE + 24,
     gap: 20,
   },
   section: {

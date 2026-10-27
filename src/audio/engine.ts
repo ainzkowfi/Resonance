@@ -1,4 +1,6 @@
-import { useDiagnosticsStore } from '../store/diagnostics';
+import { useSyncExternalStore } from 'react';
+
+import { describeError, useDiagnosticsStore } from '../store/diagnostics';
 import type { Track } from '../types/track';
 import { ExpoAudioEngine } from './expoAudioEngine';
 import { NativeAudioEngine, nativePlayerLoadFailure, nativePlayerModule } from './nativeBackend';
@@ -21,6 +23,25 @@ export type {
   StatusListener,
 } from './types';
 
+/** Which player library is in use. Published so the settings screen can show it. */
+type EngineKind = 'expo' | 'native';
+
+let activeKind: EngineKind = 'expo';
+const kindSubscribers = new Set<() => void>();
+
+function publishKind(next: EngineKind): void {
+  if (activeKind === next) return;
+  activeKind = next;
+  for (const notify of kindSubscribers) notify();
+}
+
+function subscribeToActiveEngine(listener: () => void): () => void {
+  kindSubscribers.add(listener);
+  return () => {
+    kindSubscribers.delete(listener);
+  };
+}
+
 /**
  * The engine the whole app plays through.
  *
@@ -34,11 +55,10 @@ class EngineHolder implements PlaybackEngine {
   private engine: PlaybackEngine | null = null;
   private statusListener: StatusListener | null = null;
   private handoffListener: HandoffListener | null = null;
-  private kind: 'expo' | 'native' = 'expo';
 
   /** The player library actually in use. */
-  get sourceKind(): 'expo' | 'native' {
-    return this.kind;
+  get sourceKind(): EngineKind {
+    return activeKind;
   }
 
   resolve(): PlaybackEngine {
@@ -46,7 +66,7 @@ class EngineHolder implements PlaybackEngine {
 
     const module = source === 'expo' ? null : nativePlayerModule();
     if (module) {
-      this.kind = 'native';
+      publishKind('native');
       this.engine = new NativeAudioEngine(module);
     } else {
       if (source === 'native') {
@@ -58,7 +78,7 @@ class EngineHolder implements PlaybackEngine {
           nativePlayerLoadFailure() ?? 'The module is missing.',
         );
       }
-      this.kind = 'expo';
+      publishKind('expo');
       this.engine = new ExpoAudioEngine();
     }
 
@@ -73,11 +93,32 @@ class EngineHolder implements PlaybackEngine {
   rebuildFor(next: EngineSource): void {
     if (!this.engine) return;
     const wantsNative = next !== 'expo' && nativePlayerModule() != null;
-    if (wantsNative === (this.kind === 'native')) return;
+    if (wantsNative === (activeKind === 'native')) return;
 
     const previous = this.engine;
     this.engine = null;
     previous.unload();
+    this.resolve();
+  }
+
+  /**
+   * Drops the native engine and builds the expo one, keeping the listeners.
+   *
+   * Reached when the native player could not play something. It is a recovery
+   * path, not a setting: the stored choice is untouched, so the next launch
+   * tries the native player again.
+   */
+  useExpo(reason: string, detail?: string): void {
+    if (activeKind !== 'native') return;
+    const previous = this.engine;
+    this.engine = null;
+    source = 'expo';
+    useDiagnosticsStore.getState().addIssue('audio', reason, detail ?? '');
+    try {
+      previous?.unload();
+    } catch {
+      // Already gone.
+    }
     this.resolve();
   }
 
@@ -95,8 +136,20 @@ class EngineHolder implements PlaybackEngine {
     return this.resolve().configure();
   }
 
-  load(track: Track, options?: LoadOptions): Promise<void> {
-    return this.resolve().load(track, options);
+  async load(track: Track, options?: LoadOptions): Promise<void> {
+    const engine = this.resolve();
+    if (activeKind !== 'native') return engine.load(track, options);
+    try {
+      return await engine.load(track, options);
+    } catch (error) {
+      // A native player that cannot even open the source will not open the next
+      // one either, so the rest of the run goes through expo-audio rather than
+      // leaving every track silent.
+      if (!fallBackToExpo('The native player could not open a track.', describeError(error).message)) {
+        throw error;
+      }
+      return this.load(track, options);
+    }
   }
 
   prepare(track: Track): void {
@@ -107,8 +160,17 @@ class EngineHolder implements PlaybackEngine {
     this.resolve().releaseStandby();
   }
 
-  crossfadeTo(track: Track, options: CrossfadeOptions): Promise<void> {
-    return this.resolve().crossfadeTo(track, options);
+  async crossfadeTo(track: Track, options: CrossfadeOptions): Promise<void> {
+    const engine = this.resolve();
+    if (activeKind !== 'native') return engine.crossfadeTo(track, options);
+    try {
+      return await engine.crossfadeTo(track, options);
+    } catch (error) {
+      if (!fallBackToExpo('The native player could not open a track.', describeError(error).message)) {
+        throw error;
+      }
+      return this.crossfadeTo(track, options);
+    }
   }
 
   updateLockScreenMetadata(track: Track): void {
@@ -151,9 +213,28 @@ const holder = new EngineHolder();
 
 export const audioEngine: PlaybackEngine = holder;
 
-/** Which player library is playing right now, for the settings screen. */
-export function activeEngineSource(): 'expo' | 'native' {
+/** Which player library is playing right now, for diagnostics and the settings screen. */
+export function activeEngineSource(): EngineKind {
   return holder.sourceKind;
+}
+
+/** `activeEngineSource()` as a value React re-renders for. */
+export function useActiveEngineSource(): EngineKind {
+  return useSyncExternalStore(subscribeToActiveEngine, activeEngineSource, activeEngineSource);
+}
+
+/**
+ * Switches to expo-audio after the native player failed to play a track.
+ *
+ * Returns true when the caller should retry, which happens once per run: after
+ * the swap the active library is already expo-audio. An explicitly chosen
+ * Native engine is left alone — that setting exists to test the native path,
+ * and silently swapping it would hide the failure the listener is looking for.
+ */
+export function fallBackToExpo(reason: string, detail?: string): boolean {
+  if (holder.sourceKind !== 'native' || source === 'native') return false;
+  holder.useExpo(reason, detail);
+  return true;
 }
 
 /**

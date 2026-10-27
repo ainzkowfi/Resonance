@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 import { create } from 'zustand';
 import { createJSONStorage, persist, type PersistStorage } from 'zustand/middleware';
-import { audioEngine, setEngineSource, type EngineSource } from '../audio/engine';
+import { audioEngine, fallBackToExpo, setEngineSource, type EngineSource } from '../audio/engine';
 import { loadAnalysis, type TrackAnalysis } from '../media/waveform';
 import { crossfadeStart, normalizeCrossfade } from '../lib/crossfade';
 import { sanitizeTracks } from '../lib/filter';
@@ -432,8 +432,20 @@ export const usePlayerStore = create<PlayerState>()(
         // not left looking like a stopped player.
         if (status.error && status.error !== lastPlaybackError) {
           lastPlaybackError = status.error;
-          if (state.currentTrack) {
-            void recoverTrack(state.currentTrack, new Error(status.error), { autoplay: true });
+          const failed = state.currentTrack;
+          // A source the platform will not decode is the one case where the
+          // other player library is genuinely worth trying: expo-audio decodes
+          // more containers than the platform player, so the same file can play
+          // there. Retried once, at the position the listen had reached.
+          if (
+            failed &&
+            fallBackToExpo(`The native player could not decode “${failed.title}”.`, status.error)
+          ) {
+            loadTrack(failed, { startAt: state.position, autoplay: true });
+            return;
+          }
+          if (failed) {
+            void recoverTrack(failed, new Error(status.error), { autoplay: true });
           }
         }
 

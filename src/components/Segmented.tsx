@@ -61,6 +61,7 @@ export function Segmented<T extends string>({ options, value, onChange }: Segmen
           }}
         >
           <Text
+            numberOfLines={1}
             style={[styles.label, option.value === value ? styles.labelActive : styles.labelIdle]}
           >
             {option.label}
@@ -78,12 +79,17 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     padding: 3,
     alignSelf: 'flex-start',
+    // A row of four segments does not fit a 360dp screen beside another
+    // control; without this the last of them — or the button next to it — is
+    // pushed past the edge and simply disappears.
+    flexShrink: 1,
   },
   segment: {
     paddingHorizontal: 12,
     height: 34,
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 1,
   },
   indicator: {
     position: 'absolute',

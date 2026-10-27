@@ -82,6 +82,13 @@ export default function LibraryScreen() {
   const router = useRouter();
   const [sort, setSort] = useState<TrackSort>('artist');
   const sortedTracks = useMemo(() => sortTracks(tracks, sort), [tracks, sort]);
+  // The docked player and the tab bar both live below this list, and the tab bar
+  // grows by the gesture inset, so the reserved space has to include it or the
+  // last row sits behind the bar.
+  const listStyle = useMemo(
+    () => [styles.listContent, { paddingBottom: BOTTOM_BAR_SPACE + insets.bottom + 24 }],
+    [insets.bottom],
+  );
 
   const playlistRows = useMemo(
     () =>
@@ -202,7 +209,7 @@ export default function LibraryScreen() {
           <Animated.FlatList
             data={sortedTracks}
             keyExtractor={(item) => item.id}
-            contentContainerStyle={styles.listContent}
+            contentContainerStyle={listStyle}
             showsVerticalScrollIndicator={false}
             ListEmptyComponent={<Empty label="No audio files found on this device." />}
             renderItem={({ item, index }) => (
@@ -224,7 +231,7 @@ export default function LibraryScreen() {
             keyExtractor={(item) => item.key}
             numColumns={2}
             columnWrapperStyle={styles.column}
-            contentContainerStyle={styles.listContent}
+            contentContainerStyle={listStyle}
             showsVerticalScrollIndicator={false}
             ListEmptyComponent={<Empty label="No albums yet." />}
             renderItem={({ item, index }) => (
@@ -256,7 +263,7 @@ export default function LibraryScreen() {
           <Animated.FlatList
             data={artists}
             keyExtractor={(item) => item.name}
-            contentContainerStyle={styles.listContent}
+            contentContainerStyle={listStyle}
             showsVerticalScrollIndicator={false}
             ListEmptyComponent={<Empty label="No artists yet." />}
             renderItem={({ item, index }) => (
@@ -285,7 +292,7 @@ export default function LibraryScreen() {
           <Animated.FlatList
             data={playlistRows}
             keyExtractor={(item) => item.playlist.id}
-            contentContainerStyle={styles.listContent}
+            contentContainerStyle={listStyle}
             showsVerticalScrollIndicator={false}
             ListEmptyComponent={
               <Empty label="No playlists yet. Long-press a song, then Add to playlist." />
@@ -438,7 +445,7 @@ iconButton: {
   justifyContent: 'center',
 },
 listContent: {
-  paddingBottom: BOTTOM_BAR_SPACE + 24,
+  paddingTop: 4,
 },
 column: {
   gap: 12,

@@ -1,6 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Directory, File, Paths } from 'expo-file-system';
 
+import { activeEngineSource } from '../audio/engine';
+import { nativePlayerLoadFailure } from '../audio/nativeBackend';
+
 import { selfTestWav } from './decodeCheck';
 import type { CheckOutcome, FeatureCheck } from './featureChecks';
 import { applyLibraryFilter, EMPTY_FILTER, sanitizeTracks } from './filter';
@@ -306,6 +309,29 @@ const DEFINITIONS: CheckDefinition[] = [
           detail: describeThrown(error),
         };
       }
+    },
+  },
+  {
+    id: 'engine',
+    label: 'Playback engine',
+    intent: 'The player library that was asked for is the one running',
+    run: async () => {
+      const chosen = usePlayerStore.getState().playbackEngine;
+      const running = activeEngineSource();
+      if (chosen !== 'auto' && chosen !== running) {
+        return {
+          status: 'fail',
+          note:
+            chosen === 'native'
+              ? 'Native was chosen but this build has no native player'
+              : 'expo-audio was chosen but the native player is running',
+          detail: nativePlayerLoadFailure() ?? 'No load error was recorded.',
+        };
+      }
+      return {
+        status: 'pass',
+        note: `Playing through ${running === 'native' ? 'the native player' : 'expo-audio'}`,
+      };
     },
   },
   {
